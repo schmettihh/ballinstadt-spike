@@ -504,9 +504,9 @@ function nodePath(from, to, G = G_ALL) {
    --------------------------------------------------------------------- */
 const START_DAY = new Date(1907, 8, 12);
 let clock = 15 * 60;             // minutes since day 0, 00:00
-let speed = 2, lastSpeed = 2, paused = false;
+let speed = 1, lastSpeed = 1, paused = false;
 let agents = [], AID = 1;
-let showPlan = true, showSrc = false;
+let showPlan = false, showSrc = false;
 let selected = null, hovered = null;
 let phase = 'day';               // day | shipGone | epilogue | end
 const barge = { x: BARGE_DOCK, state: 'docked', count: 0, alpha: 1 };
@@ -1589,8 +1589,8 @@ function fmtDate(m) { const d = new Date(START_DAY); d.setDate(d.getDate() + Mat
 function log(txt, cls = '') { logEntries.unshift({ t: fmtTime(clock), txt, cls }); logEntries = logEntries.slice(0, 6); }
 function updateCaseBtn() { }
 let CARD = null, cardPausedFrom = null;
-function openCard(blocks, pause, opts = {}) { CARD = { blocks, opts, scroll: 0, lay: null }; if (pause && cardPausedFrom === null) { cardPausedFrom = speed || lastSpeed || 2; setSpeed(0); } }
-function closeModal() { CARD = null; if (cardPausedFrom !== null) { setSpeed(cardPausedFrom || 2); cardPausedFrom = null; } }
+function openCard(blocks, pause, opts = {}) { CARD = { blocks, opts, scroll: 0, lay: null }; if (pause && cardPausedFrom === null) { cardPausedFrom = speed || lastSpeed || 1; setSpeed(0); } }
+function closeModal() { CARD = null; if (cardPausedFrom !== null) { setSpeed(cardPausedFrom || 1); cardPausedFrom = null; } }
 
 function noticeCard(first) {
   openCard([
@@ -1901,7 +1901,7 @@ cv.addEventListener('wheel', e => { e.preventDefault(); mouse.x = e.clientX; mou
   for (const v of ['iso', 'td']) { const cam = cams[v], ax = e.clientX / VIEW_S + cam.x, ay = e.clientY / VIEW_S + cam.y; cam.x = ax - e.clientX / ns; cam.y = ay - e.clientY / ns; }
   VIEW_S = ns; resize(); }, { passive: false });
 addEventListener('keydown', e => {
-  if (e.code === 'Space') { e.preventDefault(); if (CARD) return; setSpeed(speed ? 0 : (lastSpeed || 2)); }
+  if (e.code === 'Space') { e.preventDefault(); if (CARD) return; setSpeed(speed ? 0 : (lastSpeed || 1)); }
   if (e.key === 'p' || e.key === 'P') showPlan = !showPlan;
   if (e.key === 'q' || e.key === 'Q') showSrc = !showSrc;
   if ((e.key === 'v' || e.key === 'V') && style === 'pixel') toggleView();
@@ -1974,7 +1974,7 @@ function frame(now) { const dt = (now - lastT) / 1000; lastT = now; update(dt); 
 buildIsoAll(); HISTC = renderHist();
 VIEW_S = innerWidth >= 1000 ? (ZOOMS.includes(1.5) ? 1.5 : 1) : 1; camH.z = clamp(innerWidth / 1900, 0.45, 1.1);
 resize(); centerOn(50, 12); for (const v of ['iso', 'td']) cams[v].x -= innerWidth >= 1000 ? 90 / VIEW_S : 0;
-setupDay(); setSpeed(2); noticeCard(true);
+setupDay(); setSpeed(1); noticeCard(true);
 requestAnimationFrame(frame);
 
 </script>
