@@ -1699,6 +1699,7 @@ const UI = { ink: '#1d1a1f', ink2: '#3b302c', sep: '#6b5641', paper: '#e9dcb9', 
 const STAGE_UI = ['#6b5641', '#9a3a24', '#9a3a24', '#4f6b36', '#34506a'];
 const STAGES = ['Ankunft', 'Registrierung', 'Bad & Untersuchung', 'Unterbringung', 'Einschiffung'];
 const SRC_TXT = { b: 'belegt', r: 'rekonstruiert', s: 'Spielentscheidung' };
+const ZOOMS = Number.isInteger((devicePixelRatio || 1) * 1.5) ? [1, 1.5, 2, 3, 4, 5] : [1, 2, 3, 4, 5];
 let VW = 0, VH = 0, DPR = 1, VIEW_S = 2, U = 2, HW = 0, HH = 0, view = 'iso', style = 'pixel';
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 const VIEWC = mk(1, 1), vg = VIEWC.getContext('2d'), HUDC = mk(1, 1), hg = HUDC.getContext('2d');
@@ -1769,7 +1770,6 @@ function drawHUD() {
   drawInspector();
   // tooltip
   if (hovered && !CARD && !overHud()) { const nm = hovered.kind === 'agent' ? (hovered.a.name || '') : (hovered.b.short || hovered.b.name); if (nm) { const w = textW(nm) + 8, x = Math.min(HW - w - 4, mouse.x / U + 8), y = mouse.y / U + 10; R(x + 1, y + 1, w, 12, UI.shade); R(x, y, w, 12, UI.ink); R(x + 1, y + 1, w - 2, 10, UI.paperL); Tx(nm, x + 4, y + 2, UI.ink); } }
-  if (CARD) { HITS = []; hg.fillStyle = DIM; hg.fillRect(0, 0, HW, HH); BLOCK = [[0, 0, HW, HH]]; drawCard(); }
 }
 function drawInspector() {
   const s = selected; if (!s) return;
@@ -1897,7 +1897,7 @@ cv.addEventListener('pointerleave', () => { mouse.in = false; hovered = null; })
 cv.addEventListener('wheel', e => { e.preventDefault(); mouse.x = e.clientX; mouse.y = e.clientY;
   if (CARD) { CARD.scroll += Math.sign(e.deltaY) * 20; return; }
   if (style === 'hist') { const nz = clamp(camH.z * Math.exp(-e.deltaY * 0.0015), 0.35, 4); const hx = e.clientX / camH.z + camH.x, hy = e.clientY / camH.z + camH.y; camH.z = nz; camH.x = hx - e.clientX / nz; camH.y = hy - e.clientY / nz; return; }
-  const ns = clamp(VIEW_S + (e.deltaY < 0 ? 1 : -1), 1, 5); if (ns === VIEW_S) return;
+  const i0 = ZOOMS.indexOf(VIEW_S), ns = ZOOMS[clamp((i0 < 0 ? 1 : i0) + (e.deltaY < 0 ? 1 : -1), 0, ZOOMS.length - 1)]; if (ns === VIEW_S) return;
   for (const v of ['iso', 'td']) { const cam = cams[v], ax = e.clientX / VIEW_S + cam.x, ay = e.clientY / VIEW_S + cam.y; cam.x = ax - e.clientX / ns; cam.y = ay - e.clientY / ns; }
   VIEW_S = ns; resize(); }, { passive: false });
 addEventListener('keydown', e => {
@@ -1939,16 +1939,32 @@ function update(dtReal) {
   }
   if (FLASH.t > 0) FLASH.t -= dtReal;
 }
+/* frosted-glass backdrop behind cards: blur the finished frame, cached briefly */
+const GLASS = document.createElement('canvas'), gg = GLASS.getContext('2d'); let glassT = -1;
+function drawCardLayer() {
+  if (!CARD) { glassT = -1; return; }
+  if (glassT < 0 || animT - glassT > 0.4 || GLASS.width !== cv.width || GLASS.height !== cv.height) {
+    if (GLASS.width !== cv.width || GLASS.height !== cv.height) { GLASS.width = cv.width; GLASS.height = cv.height; }
+    gg.setTransform(1, 0, 0, 1, 0, 0); gg.filter = 'none'; gg.drawImage(cv, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = true;
+    ctx.filter = `blur(${Math.round(12 * DPR)}px) saturate(1.15)`; ctx.drawImage(GLASS, 0, 0); ctx.filter = 'none';
+    ctx.fillStyle = 'rgba(246,238,218,.28)'; ctx.fillRect(0, 0, cv.width, cv.height);
+    gg.drawImage(cv, 0, 0); glassT = animT;
+  } else { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(GLASS, 0, 0); }
+  hg.clearRect(0, 0, HW, HH); HITS = []; BLOCK = [[0, 0, HW, HH]]; drawCard();
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(HUDC, 0, 0, HW * U * DPR, HH * U * DPR);
+}
 function render() {
   const k = nightK(); VK = k < 0.25 ? 'day' : k < 0.7 ? 'dusk' : 'night'; K = PALS[VK];
-  if (style === 'hist') { drawHistView(animT); drawHUD(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false; ctx.drawImage(HUDC, 0, 0, HW * U * DPR, HH * U * DPR); return; }
+  if (style === 'hist') { drawHistView(animT); drawHUD(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false; ctx.drawImage(HUDC, 0, 0, HW * U * DPR, HH * U * DPR); drawCardLayer(); return; }
   const cam = cams[view], cx = Math.round(cam.x), cy = Math.round(cam.y);
   vg.fillStyle = PALS[VK].mea1; vg.fillRect(0, 0, VIEWC.width, VIEWC.height);
   if (view === 'iso') drawIsoView(vg, cx, cy, animT); else { PTD = PTDV[VK]; drawTDView(vg, cx, cy, animT); }
   drawHUD();
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(VIEWC, 0, 0, VIEWC.width * VIEW_S * DPR, VIEWC.height * VIEW_S * DPR);
+  ctx.drawImage(VIEWC, 0, 0, Math.round(VIEWC.width * VIEW_S * DPR), Math.round(VIEWC.height * VIEW_S * DPR));
   ctx.drawImage(HUDC, 0, 0, HW * U * DPR, HH * U * DPR);
+  drawCardLayer();
 }
 function frame(now) { const dt = (now - lastT) / 1000; lastT = now; update(dt); render(); requestAnimationFrame(frame); }
 
@@ -1956,7 +1972,7 @@ function frame(now) { const dt = (now - lastT) / 1000; lastT = now; update(dt); 
    BOOT
    --------------------------------------------------------------------- */
 buildIsoAll(); HISTC = renderHist();
-VIEW_S = innerWidth >= 1000 ? 2 : 1; camH.z = clamp(innerWidth / 1500, 0.5, 1.4);
+VIEW_S = innerWidth >= 1000 ? (ZOOMS.includes(1.5) ? 1.5 : 1) : 1; camH.z = clamp(innerWidth / 1900, 0.45, 1.1);
 resize(); centerOn(50, 12); for (const v of ['iso', 'td']) cams[v].x -= innerWidth >= 1000 ? 90 / VIEW_S : 0;
 setupDay(); setSpeed(2); noticeCard(true);
 requestAnimationFrame(frame);
