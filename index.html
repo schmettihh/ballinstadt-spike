@@ -1,0 +1,1966 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ballinstadt · Konzeptstudie zur Überprüfung von Perspektive und Darstellung</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#1d1a1f}canvas{display:block;touch-action:none}</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+'use strict';
+/* =====================================================================
+   BALLINSTADT – Auswandererhallen Veddel, 1907
+   Pixel renderer: everything is drawn on a native pixel grid (2:1 iso),
+   then scaled by whole numbers. Map derived from research (RESEARCH.md).
+   1 tile ≈ 5 m · 1 sim unit = 1 game minute
+   ===================================================================== */
+
+const TW2 = 12, TH2 = 6, ZU = 12;
+const WB = { x0: -8, x1: 120, y0: -16, y1: 64 };
+const GOX = (WB.y1 - WB.x0) * TW2 + 4, GOY = -(WB.x0 + WB.y0) * TH2 + 80;
+const GW = (WB.x1 - WB.y0 + WB.y1 - WB.x0) * TW2 + 8, GH = (WB.x1 + WB.y1 - WB.x0 - WB.y0) * TH2 + 90;
+const A = (x, y, z = 0) => [(x - y) * TW2 + GOX, (x + y) * TH2 - z * ZU + GOY];
+const unA = (ax, ay) => { const a = (ax - GOX) / TW2, b = (ay - GOY) / TH2; return [(a + b) / 2, (b - a) / 2]; };
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const ri = (a, b) => Math.floor(rnd(a, b + 1));
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const md = (a, m) => ((a % m) + m) % m;
+function mk(w, h) { const c = document.createElement('canvas'); c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h)); return c; }
+function hash(x, y) { let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263)) >>> 0; h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+let SEED = 1;
+function srand(s) { SEED = (s >>> 0) || 1; }
+function sr() { SEED ^= SEED << 13; SEED >>>= 0; SEED ^= SEED >>> 17; SEED ^= SEED << 5; SEED >>>= 0; return SEED / 4294967296; }
+
+/* ---------------------------------------------------------------------
+   PALETTE  (day; dusk and night are palette swaps)
+   --------------------------------------------------------------------- */
+const BASE = {
+  ink: '#1d1a1f', ink2: '#3b302c', paperL: '#f3e9cf',
+  sand1: '#d6c399', sand2: '#c3ad82', sand3: '#a68f67', sandA: '#d5bb95', sandA2: '#c0a27c', sandC: '#c9ad97', sandC2: '#b49480',
+  pave1: '#e0d1ab', pave2: '#c9b790', pave3: '#ae9b76', paveH: '#ece0c0',
+  stone1: '#b7ac97', stone2: '#998e7b', stone3: '#736a5b',
+  mea1: '#98a364', mea2: '#838e52', mea3: '#65703f', mea4: '#aeb578',
+  water1: '#5d8995', water2: '#4d7382', water3: '#83abb0', water4: '#3a5c6a', water5: '#b4d0cc',
+  brick1: '#bd6448', brick2: '#9b4b35', brick3: '#773325', brick4: '#552318', brickH: '#d47e5e', mortar: '#8c4b37',
+  plas1: '#ecdebd', plas2: '#cfbd97', plas3: '#ad9a74',
+  wood1: '#7a5236', wood2: '#573924', wood3: '#382517',
+  roof1: '#6a625f', roof2: '#554e4c', roof3: '#3f3a39', roofH: '#87807b',
+  copper: '#6f9b86', copperD: '#4d7864',
+  floor1: '#c6a371', floor2: '#ae8a5b', floor3: '#8c6d45',
+  tile1: '#c8d1cb', tile2: '#a8b5b0',
+  grass1: '#8da35a', grass2: '#748849', grass3: '#586b36', grass4: '#a7ba6c',
+  leaf1: '#8aa653', leaf2: '#688641', leaf3: '#4b6431', leaf4: '#2f4027',
+  rail: '#4a4440', metal: '#5c6767', metalL: '#8a9595',
+  train1: '#46553f', train2: '#34402f', trainR: '#4b4642',
+  win: '#3b4a55', winF: '#e6d8b6', lamp: '#3a3530', pool: '#d6c399', glow: '#d6c399',
+  rust: '#a3432a', clean: '#5f7a3f', obs: '#8a2a22', blueM: '#3f5a73',
+  white: '#f2eee4', whiteS: '#c9c3b5', bed1: '#e8e0cc', bed2: '#b8a888', blanket: '#86674a', flower: '#e8d06a'
+};
+function rgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+function hex(r, g, b) { const f = v => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0'); return '#' + f(r) + f(g) + f(b); }
+function shade(h, k = 0.72) { const [r, g, b] = rgb(h); return hex(r * k, g * k, b * k); }
+function vt(h, v) {
+  if (v === 'day') return h; const [r, g, b] = rgb(h);
+  if (v === 'dusk') return hex(r * 0.76 + 12, g * 0.64 + 8, b * 0.7 + 26);
+  return hex(r * 0.3 + 14, g * 0.34 + 18, b * 0.5 + 42);
+}
+const PALS = {};
+for (const v of ['day', 'dusk', 'night']) {
+  const p = {}; for (const k in BASE) p[k] = vt(BASE[k], v);
+  if (v !== 'day') { p.win = v === 'night' ? '#f0c060' : '#d8a458'; p.lamp = '#ffe08a'; p.pool = v === 'night' ? '#6f6750' : '#b9a27f'; p.glow = v === 'night' ? '#8c7f5c' : '#c6ae86'; p.winF = vt(BASE.winF, v); }
+  PALS[v] = p;
+}
+let K = PALS.day, VK = 'day';
+
+/* ---------------------------------------------------------------------
+   PIXEL PRIMITIVES (draw target D = {g, ox, oy})
+   --------------------------------------------------------------------- */
+let D = null;
+function Q(x, y, z = 0) { const [a, b] = A(x, y, z); return [a - D.ox, b - D.oy]; }
+function spans(pts, fill) {
+  const g = D.g; g.fillStyle = fill;
+  let minY = 1e9, maxY = -1e9; for (const p of pts) { if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1]; }
+  const n = pts.length;
+  for (let y = Math.floor(minY); y < Math.ceil(maxY); y++) {
+    const yc = y + 0.5, xs = [];
+    for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n];
+      if ((a[1] <= yc && b[1] > yc) || (b[1] <= yc && a[1] > yc)) xs.push(a[0] + (yc - a[1]) * (b[0] - a[0]) / (b[1] - a[1])); }
+    xs.sort((p, q) => p - q);
+    for (let i = 0; i + 1 < xs.length; i += 2) { const x0 = Math.round(xs[i]), x1 = Math.round(xs[i + 1]); if (x1 > x0) g.fillRect(x0, y, x1 - x0, 1); }
+  }
+}
+function fp(w, fill) { spans(w.map(p => Q(p[0], p[1], p[2] || 0)), fill); }
+function lineP(x0, y0, x1, y1, col) {
+  const g = D.g; g.fillStyle = col; x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx + dy;
+  for (let i = 0; i < 4000; i++) { g.fillRect(x0, y0, 1, 1); if (x0 === x1 && y0 === y1) break; const e2 = 2 * err; if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } }
+}
+function wl(p, q, col) { const a = Q(p[0], p[1], p[2] || 0), b = Q(q[0], q[1], q[2] || 0); lineP(a[0], a[1], b[0], b[1], col); }
+function px(x, y, col) { D.g.fillStyle = col; D.g.fillRect(Math.round(x), Math.round(y), 1, 1); }
+function outlineC(c, col, keepInner) {
+  const g = c.getContext('2d'), w = c.width, h = c.height, im = g.getImageData(0, 0, w, h), d = im.data, [r, gg, b] = rgb(col);
+  const op = new Uint8Array(w * h); for (let i = 0; i < w * h; i++) op[i] = d[i * 4 + 3] > 0 ? 1 : 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = y * w + x; if (op[i]) continue;
+    if ((x > 0 && op[i - 1]) || (x < w - 1 && op[i + 1]) || (y > 0 && op[i - w]) || (y < h - 1 && op[i + w])) { d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255; } }
+  g.putImageData(im, 0, 0);
+}
+function spriteFor(pts3d, draw, outline = 'ink') {
+  const ps = pts3d.map(p => A(p[0], p[1], p[2] || 0));
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const [a, b] of ps) { x0 = Math.min(x0, a); y0 = Math.min(y0, b); x1 = Math.max(x1, a); y1 = Math.max(y1, b); }
+  const ox = Math.floor(x0) - 3, oy = Math.floor(y0) - 3, c = mk(x1 - ox + 4, y1 - oy + 4);
+  const prev = D; D = { g: c.getContext('2d'), ox, oy }; draw(); if (outline) outlineC(c, K[outline] || outline); D = prev;
+  return { c, ax: ox, ay: oy };
+}
+
+/* ---------------------------------------------------------------------
+   PATTERNS (iso-sheared textures, rebuilt per palette)
+   --------------------------------------------------------------------- */
+let PT = {};
+function mkPat(w, h, fn) { const c = mk(w, h), g = c.getContext('2d'); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const col = fn(x, y); if (col) { g.fillStyle = col; g.fillRect(x, y, 1, 1); } } return g.createPattern(c, 'repeat'); }
+function coursed(base, line, joint, hi, lo, dir, ch = 3, jw = 6) {
+  return (x, y) => { const v = md(y - dir * Math.floor(x / 2), ch * 2), row = Math.floor(v / ch);
+    if (v % ch === 0) return line; if (joint && md(x + row * (jw / 2), jw) === 0) return joint;
+    const h = hash(x * 7 + 1, y * 13 + 5); return h < 0.07 ? hi : h > 0.94 ? lo : base; };
+}
+function speckle(base, list) { return (x, y) => { let h = hash(x + 31, y + 17); for (const [c, p] of list) { if (h < p) return c; h -= p; } return base; }; }
+function buildPatterns() {
+  PT = {
+    brickS: mkPat(12, 6, coursed(K.brick1, K.mortar, K.mortar, K.brickH, K.brick2, 1)),
+    brickE: mkPat(12, 6, coursed(K.brick2, K.brick4, K.brick4, K.brick1, K.brick3, -1)),
+    roofS: mkPat(12, 6, (x, y) => { const v = md(y - Math.floor(x / 2), 6), row = Math.floor(v / 3); if (v % 3 === 0) return K.roof3; if (v % 3 === 1) return K.roofH; return md(x + row * 2, 4) === 0 ? K.roof2 : K.roof1; }),
+    roofE: mkPat(12, 6, (x, y) => { const v = md(y + Math.floor(x / 2), 6), row = Math.floor(v / 3); if (v % 3 === 0) return K.roof3; if (v % 3 === 1) return K.roof1; return md(x + row * 2, 4) === 0 ? K.roof3 : K.roof2; }),
+    copS: mkPat(12, 6, coursed(K.copper, K.copperD, null, K.copper, K.copperD, 1)),
+    plasS: mkPat(16, 16, speckle(K.plas1, [[K.plas2, 0.05]])),
+    plasE: mkPat(16, 16, speckle(K.plas2, [[K.plas3, 0.06]])),
+    floor: mkPat(12, 6, coursed(K.floor1, K.floor2, K.floor3, K.floor1, K.floor2, 1, 3, 12)),
+    tiles: mkPat(8, 4, (x, y) => (md(y - Math.floor(x / 2), 4) === 0 || md(y + Math.floor(x / 2), 4) === 0) ? K.tile2 : K.tile1),
+    cobble: mkPat(12, 6, coursed(K.pave1, K.pave2, K.pave2, K.paveH, K.pave3, 1, 3, 4)),
+    gravel: mkPat(32, 32, speckle(K.sand1, [[K.sand2, 0.11], [K.sand3, 0.025], [K.pave1, 0.02]])),
+    gravelA: mkPat(32, 32, speckle(K.sandA, [[K.sandA2, 0.12], [K.sand3, 0.025]])),
+    gravelC: mkPat(32, 32, speckle(K.sandC, [[K.sandC2, 0.13], [K.sand3, 0.02]])),
+    meadow: mkPat(32, 32, speckle(K.mea1, [[K.mea2, 0.17], [K.mea3, 0.04], [K.mea4, 0.06]])),
+    lawn: mkPat(32, 32, speckle(K.grass1, [[K.grass2, 0.2], [K.grass3, 0.04], [K.grass4, 0.08], [K.flower, 0.004], [K.white, 0.004]])),
+    stone: mkPat(12, 6, coursed(K.stone1, K.stone2, K.stone2, K.stone1, K.stone2, 1, 6, 12)),
+    planks: mkPat(12, 6, coursed(K.wood1, K.wood2, null, K.wood1, K.wood2, -1, 2, 12)),
+    water: mkPat(64, 32, (x, y) => { if (y % 4 === 1 && hash(Math.floor(x / 8), y) < 0.28) return K.water3; if (y % 4 === 3 && hash(Math.floor((x + 4) / 8) + 99, y) < 0.3) return K.water2; return K.water1; })
+  };
+}
+
+/* ---------------------------------------------------------------------
+   BITMAP FONT (drawn for this game; caps 6 px, x-height 4 px)
+   --------------------------------------------------------------------- */
+const GLYPH_SRC = {
+  A: '1 .##.|#..#|#..#|####|#..#|#..#', B: '1 ###.|#..#|###.|#..#|#..#|###.', C: '1 .###|#...|#...|#...|#...|.###', D: '1 ###.|#..#|#..#|#..#|#..#|###.',
+  E: '1 ####|#...|###.|#...|#...|####', F: '1 ####|#...|###.|#...|#...|#...', G: '1 .###|#...|#...|#.##|#..#|.###', H: '1 #..#|#..#|####|#..#|#..#|#..#',
+  I: '1 ###|.#.|.#.|.#.|.#.|###', J: '1 ..##|...#|...#|...#|#..#|.##.', K: '1 #..#|#.#.|##..|#.#.|#..#|#..#', L: '1 #...|#...|#...|#...|#...|####',
+  M: '1 #...#|##.##|#.#.#|#...#|#...#|#...#', N: '1 #..#|##.#|#.##|#..#|#..#|#..#', O: '1 .##.|#..#|#..#|#..#|#..#|.##.', P: '1 ###.|#..#|#..#|###.|#...|#...',
+  Q: '1 .##.|#..#|#..#|#..#|#.#.|.#.#', R: '1 ###.|#..#|#..#|###.|#.#.|#..#', S: '1 .###|#...|.##.|...#|...#|###.', T: '1 ###|.#.|.#.|.#.|.#.|.#.',
+  U: '1 #..#|#..#|#..#|#..#|#..#|.##.', V: '1 #...#|#...#|#...#|.#.#.|.#.#.|..#..', W: '1 #...#|#...#|#...#|#.#.#|##.##|#...#', X: '1 #..#|#..#|.##.|.##.|#..#|#..#',
+  Y: '1 #...#|#...#|.#.#.|..#..|..#..|..#..', Z: '1 ####|...#|..#.|.#..|#...|####',
+  'Ä': '0 #..#|....|.##.|#..#|####|#..#|#..#', 'Ö': '0 #..#|....|.##.|#..#|#..#|#..#|.##.', 'Ü': '0 #..#|....|#..#|#..#|#..#|#..#|.##.',
+  a: '3 .###|#..#|#..#|.###', b: '1 #...|#...|###.|#..#|#..#|###.', c: '3 .##|#..|#..|.##', d: '1 ...#|...#|.###|#..#|#..#|.###',
+  e: '3 .##.|####|#...|.##.', f: '1 ..#|.#.|###|.#.|.#.|.#.', g: '3 .###|#..#|#..#|.###|...#|.##.', h: '1 #...|#...|###.|#..#|#..#|#..#',
+  i: '1 #|.|#|#|#|#', j: '1 .#|..|.#|.#|.#|.#|.#|#.', k: '1 #..|#..|#.#|##.|#.#|#.#', l: '1 #.|#.|#.|#.|#.|.#',
+  m: '3 ####.|#.#.#|#.#.#|#.#.#', n: '3 ###.|#..#|#..#|#..#', o: '3 .##.|#..#|#..#|.##.', p: '3 ###.|#..#|#..#|###.|#...|#...',
+  q: '3 .###|#..#|#..#|.###|...#|...#', r: '3 #.##|##..|#...|#...', s: '3 .###|##..|..##|###.', t: '2 .#.|###|.#.|.#.|..#',
+  u: '3 #..#|#..#|#..#|.###', v: '3 #.#|#.#|#.#|.#.', w: '3 #...#|#.#.#|#.#.#|.#.#.', x: '3 #.#|.#.|.#.|#.#',
+  y: '3 #..#|#..#|#..#|.###|...#|.##.', z: '3 ####|..#.|.#..|####',
+  'ä': '1 #..#|....|.###|#..#|#..#|.###', 'ö': '1 #..#|....|.##.|#..#|#..#|.##.', 'ü': '1 #..#|....|#..#|#..#|#..#|.###', 'ß': '1 .##.|#..#|#.#.|#..#|#..#|#.#.',
+  '0': '1 .##.|#..#|#.##|##.#|#..#|.##.', '1': '1 .#.|##.|.#.|.#.|.#.|###', '2': '1 .##.|#..#|..#.|.#..|#...|####', '3': '1 ###.|...#|.##.|...#|...#|###.',
+  '4': '1 #..#|#..#|####|...#|...#|...#', '5': '1 ####|#...|###.|...#|...#|###.', '6': '1 .##.|#...|###.|#..#|#..#|.##.', '7': '1 ####|...#|..#.|.#..|.#..|.#..',
+  '8': '1 .##.|#..#|.##.|#..#|#..#|.##.', '9': '1 .##.|#..#|#..#|.###|...#|.##.',
+  '.': '6 #', ',': '6 .#|#.', ':': '3 #|.|.|#', ';': '3 .#|..|..|.#|#.', '!': '1 #|#|#|#|.|#', '?': '1 .##.|#..#|..#.|.#..|....|.#..',
+  '-': '4 ###', '–': '4 ####', '—': '4 #####', '(': '1 .#|#.|#.|#.|#.|.#', ')': '1 #.|.#|.#|.#|.#|#.', '/': '1 ..#|..#|.#.|.#.|#..|#..',
+  '„': '6 #.#|#.#', '“': '1 #.#|#.#', '”': '1 #.#|#.#', '"': '1 #.#|#.#', "'": '1 #|#', '‚': '6 #|#', '‘': '1 #|#', '’': '1 #|#',
+  '·': '4 #', '→': '3 ..#.|####|..#.', '←': '3 .#..|####|.#..', '×': '3 #.#|.#.|#.#', '+': '3 .#.|###|.#.', '=': '3 ###|...|###',
+  '%': '1 #..#|...#|..#.|.#..|#...|#..#', '$': '0 .#.|.##|#..|.#.|..#|##.|.#.', '&': '1 .#..|#.#.|.#..|#.#.|#..#|.##.', '|': '0 #|#|#|#|#|#|#|#',
+  '°': '1 ###|#.#|###', '…': '6 #.#.#', '<': '2 ..#|.#.|#..|.#.|..#', '>': '2 #..|.#.|..#|.#.|#..', '_': '7 ####', '*': '2 #.#|.#.|#.#',
+  '▶': '1 #..|##.|###|###|##.|#..', '▮': '1 ##|##|##|##|##|##'
+};
+const GLYPH = {};
+for (const ch in GLYPH_SRC) { const [t, r] = GLYPH_SRC[ch].split(' '); const rows = r.split('|'); GLYPH[ch] = { t: +t, rows, w: Math.max(...rows.map(x => x.length)) }; }
+function glyphOf(ch) {
+  if (GLYPH[ch]) return GLYPH[ch];
+  if (ch === 'ł') return GLYPH.l; if (ch === 'Ł') return GLYPH.L;
+  const b = ch.normalize('NFD').replace(/[̀-ͯ]/g, ''); if (GLYPH[b]) return GLYPH[b];
+  return GLYPH['?'];
+}
+const LH = 10;
+function textW(s) { let w = 0; for (const ch of s) w += (ch === ' ' ? 2 : glyphOf(ch).w) + 1; return Math.max(0, w - 1); }
+function drawText(g, s, x, y, col, sc = 1) {
+  g.fillStyle = col; let cx = x;
+  for (const ch of s) { if (ch === ' ') { cx += 3 * sc; continue; } const G = glyphOf(ch);
+    for (let r = 0; r < G.rows.length; r++) { const row = G.rows[r]; for (let c = 0; c < row.length; c++) if (row[c] === '#') g.fillRect(cx + c * sc, y + (G.t + r) * sc, sc, sc); }
+    cx += (G.w + 1) * sc; }
+  return cx - x;
+}
+function drawTextHalo(g, s, x, y, col, halo, sc = 1) { for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) drawText(g, s, x + dx, y + dy, halo, sc); drawText(g, s, x, y, col, sc); }
+const TC = new Map();
+function tc(s, col, sc = 1, halo = null) {
+  const key = s + '\u0001' + col + sc + (halo || ''); let c = TC.get(key); if (c) return c;
+  const p = halo ? 1 : 0; c = mk(textW(s) * sc + 2 * p + 1, 9 * sc + 2 * p); const g = c.getContext('2d');
+  if (halo) drawTextHalo(g, s, p, p, col, halo, sc); else drawText(g, s, 0, 0, col, sc);
+  if (TC.size > 900) TC.clear(); TC.set(key, c); return c;
+}
+function wrap(s, maxW) {
+  const out = []; for (const para of String(s).split('\n')) { let line = '';
+    for (const w of para.split(' ')) { const t = line ? line + ' ' + w : w; if (textW(t) <= maxW || !line) line = t; else { out.push(line); line = w; } }
+    out.push(line); } return out;
+}
+
+/* ---------------------------------------------------------------------
+   WORLD DATA – taken from the overview plan of 1907
+   („Hamburg-Amerika Linie. Übersichtsplan der Auswandererhallen", Tafel Ia).
+   The plan is drawn with south at the top. Plan pixel (1800-px scan) → world:
+     x = (1520 − px) / 12.5   (east)      y = (800 − py) / 12.5   (south)
+   1 unit ≈ 4.5 m. Buildings drawn at an angle in the plan are set square here.
+   --------------------------------------------------------------------- */
+const SITE_POLY = [[85.6, 54.8], [56.8, 39.6], [36.8, 36.6], [36.8, 33.2], [0.8, 24], [6.4, 2.4], [10, -0.4], [58, -0.4], [86, 21.6]];
+const A_ZONE = [38.8, 0.9, 54.1, 17.6], C_ZONE = [89.2, 47.6, 115.6, 60.4];
+const WATER_Y = -5.2, SIDING_Y = -3.9, BARGE_Y = [-9.6, -7.8], BARGE_DOCK = 26, TRAIN_STOP = 54.2;
+const ROADS = [
+  { name: 'HARBURGER CHAUSSEE', poly: [[-20, -2.6], [130, -2.6], [130, -0.4], [-20, -0.4]] },
+  { name: 'WILHELMSBURGER STRASSE', poly: [[58.1, -0.4], [60.9, -0.4], [89.2, 21.4], [89.2, 70], [86.4, 70], [86.4, 22.2]] },
+  { name: 'AUFFAHRTSTRASSE', poly: [[89.2, 44.8], [130, 44.8], [130, 46.8], [89.2, 46.8]] }
+];
+const STAATSBAHN = [[130, 43.2], [85.6, 40.2], [36.8, 37.2], [21.6, 39.2], [9.6, 41.2], [-20, 46]];
+const TUNNEL = [76.8, 38.9];
+const PLATFORM_R = [40.6, -3.3, 54.6, -2.65];
+const PONTOON_R = [29.6, -7.4, 33.4, -5.2];
+const LAWNS = [[77.6, 20, 85.6, 36.8], [53.2, 41, 58, 43]];
+const OVAL = { cx: 19.6, cy: 9.6, rx: 9.8, ry: 8.2 };
+const PITS = [[37.2, 2.2], [37.2, 3.5], [54.8, 6.2], [54.8, 7.4]];
+
+/* ---- buildings ---- */
+const BLD = [];
+function bld(o) { const b = Object.assign({ h: 1.0, rh: 0.8, mat: 'chalet', roof: 'gy', src: 'b', zone: 'B' }, o); BLD.push(b); return b; }
+const PAV_INFO = 'Schlaf- und Wohnpavillon der reinen Seite, im Pavillonstil, von Zeitgenossen mit Schweizer Chalets verglichen. Je zwei Flügel bilden mit einem Mittelbau ein H.';
+const PAV_NOTE = 'Lage und Grundform nach dem Übersichtsplan von 1907 (Tafel Ia).';
+// A – unclean side: reception building, pavilions 1–3, baths & disinfection around two courtyards
+bld({ id: 'AN', name: 'Empfangsgebäude', short: 'Abt. A · Empfangsgebäude', x: 39.2, y: 1.6, w: 14.4, d: 3.6, h: 1.25, cut: true, mat: 'brick', zone: 'A',
+  doors: [[45.8, 1.6], [52, 1.6], [48.5, 5.2]], inner: [[46.6, 1.6, 46.6, 5.2, [3.4]], [50.4, 1.6, 50.4, 5.2, [4.4]]],
+  info: 'Der Eingang zur Anlage, an der Harburger Chaussee. Hier wurde jeder Ankommende registriert, Papiere und Schiffskarte geprüft; es gab eine erste Gesundheitskontrolle und Verpflegung.',
+  note: 'Lage nach Tafel Ia belegt. Die Aufteilung in Registrierung, Untersuchung und Gepäckannahme ist eine Rekonstruktion.' });
+bld({ id: 'AP1', name: 'Pavillon 1', short: 'Pavillon 1 · unreine Seite', x: 50.4, y: 5.2, w: 3.2, d: 7.6, cut: true, zone: 'A', doors: [],
+  info: 'Einer von drei Pavillons innerhalb der unreinen Abteilung A. Wer noch nicht gebadet und untersucht war, wartete hier.', note: PAV_NOTE });
+bld({ id: 'AP2', name: 'Pavillon 2', short: 'Pavillon 2 · unreine Seite', x: 43.4, y: 5.2, w: 3.2, d: 7.6, cut: true, zone: 'A', doors: [[46.6, 9]],
+  info: 'Pavillon innerhalb der unreinen Abteilung A, zwischen den beiden Höfen. Im Spiel wartet hier, wer zurückgehalten wird.', note: PAV_NOTE + ' Die Nutzung als Warteraum ist eine Spielentscheidung.' });
+bld({ id: 'AP3', name: 'Pavillon 3', short: 'Pavillon 3 · unreine Seite', x: 39.2, y: 5.2, w: 2.8, d: 7.6, cut: true, zone: 'A', doors: [], info: 'Pavillon innerhalb der unreinen Abteilung A.', note: PAV_NOTE });
+bld({ id: 'AS', name: 'Bäder und Desinfektion', short: 'Abt. A · Bäder, Maschinen- und Kesselhaus', x: 39.2, y: 13.6, w: 14.4, d: 3.6, h: 1.25, cut: true, mat: 'brick', zone: 'A',
+  doors: [[42.7, 13.6], [47.6, 13.6], [49.8, 13.6], [41.4, 17.2], [46.4, 17.2], [51.4, 17.2]], inner: [[43.6, 13.6, 43.6, 17.2, []], [49.2, 13.6, 49.2, 17.2, []]],
+  info: 'Zwei Blöcke „Bäder u. Desinfection" links und rechts eines Maschinen- und Kesselhauses. Hier wurden die Menschen gebadet, Kleider und Gepäck mit Dampf desinfiziert. Danach ging es hinaus auf die reine Seite.',
+  note: 'Nach Tafel Ia belegt. Dass je ein Bad für Männer und für Frauen diente, ist eine Spielannahme.' });
+// kitchens and dining halls (drawn diagonally along Wilhelmsburger Straße in the plan)
+bld({ id: 'SPJ', name: 'Speisesaal für Juden', short: 'Säle für Juden', x: 64, y: 12.8, w: 4.8, d: 4.8, h: 1.2, cut: true, mat: 'brick', doors: [[66.4, 17.6]],
+  info: 'Speisesäle mit koscherer Küche. Getrennte Küchen und Säle für Juden und Christen gehörten zur Anlage.', note: 'Nach Tafel Ia belegt („Säle für Juden"). Im Plan schräg zur Straße, hier rechtwinklig.' });
+bld({ id: 'KIT', name: 'Küchen', x: 60, y: 8.2, w: 4.4, d: 4.6, h: 1.2, mat: 'brick', roof: 'hip', rh: 0.7, info: 'Küchen zwischen den Speisesälen.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'SPC', name: 'Speisesaal für Christen', short: 'Säle für Christen', x: 56, y: 3, w: 4.4, d: 5.2, h: 1.2, cut: true, mat: 'brick', doors: [[58.2, 8.2]],
+  info: 'Speisesäle für die christlichen Auswanderer.', note: 'Nach Tafel Ia belegt („Säle für Christen").' });
+// H-shaped double pavilions
+const PAIRS = [
+  ['P19', 72.4, 75.2, 'P20', 67.6, 70.0, 29.6, 36, 'n'], ['P21', 63.2, 65.8, 'P22', 58, 60.8, 29.6, 36, 'n'], ['P23', 53.2, 56, 'P24', 48, 51, 29.6, 36, 'n'],
+  ['P18', 73.6, 76.4, 'P17', 68.4, 71.2, 20.8, 28, 's'], ['P16', 64, 66.8, 'P15', 59.2, 61.8, 20.8, 28, 's'], ['P14', 54.4, 57, 'P13', 49.6, 52, 20.8, 28, 's'],
+  ['P12', 43.2, 45.8, 'P11', 38.8, 41.4, 19.6, 26.4, 'm'], ['P10', 34.2, 36.6, 'P8', 30, 32.2, 19.6, 26.4, 'm'], ['P7', 25.6, 28.4, 'P6', 21, 23.8, 19.6, 26.4, 'm']];
+for (const [a, ax0, ax1, b, bx0, bx1, y0, y1, cpos] of PAIRS) {
+  for (const [id, x0, x1] of [[a, ax0, ax1], [b, bx0, bx1]]) {
+    if (id === 'P17') bld({ id, name: 'Pavillon 17', short: 'Schlafpavillon 17', x: x0, y: y0, w: x1 - x0, d: y1 - y0, cut: true, doors: [[(x0 + x1) / 2, y0], [(x0 + x1) / 2, y1]], inner: [[x0, 24.4, x1, 24.4, []]],
+      info: 'Schlafpavillon der reinen Seite. Männer und Frauen schliefen in getrennten Sälen – auch Familien wurden nachts getrennt.', note: PAV_NOTE + ' Getrennte Säle sind belegt, die Bettenzahl ist verkleinert.' });
+    else bld({ id, name: 'Pavillon ' + id.slice(1), x: x0, y: y0, w: x1 - x0, d: y1 - y0, door: id + '_D', doorAt: [(x0 + x1) / 2, y0], info: PAV_INFO, note: PAV_NOTE });
+  }
+  const cx0 = Math.min(ax1, bx1), cx1 = Math.max(ax0, bx0), cy = cpos === 'n' ? y0 + 0.4 : cpos === 's' ? y1 - 2.4 : (y0 + y1) / 2 - 1;
+  bld({ id: a + 'M', name: 'Mittelbau ' + a.slice(1) + '/' + b.slice(1), x: cx0, y: cy, w: cx1 - cx0, d: 2, h: 0.8, rh: 0.5, roof: 'gx', mat: 'plaster', src: 'r',
+    info: 'Verbindungsbau zwischen zwei Pavillonflügeln.', note: 'Im Plan belegt; die Nutzung (Wasch- und Aborträume) ist eine Annahme.' });
+}
+bld({ id: 'P9', name: 'Pavillon 9', x: 31.6, y: 14.8, w: 5.6, d: 2.4, roof: 'gx', door: 'P9_D', doorAt: [34.4, 17.2], info: PAV_INFO, note: PAV_NOTE });
+bld({ id: 'P4', name: 'Pavillon 4', x: 31.6, y: 10.4, w: 5.6, d: 2.8, roof: 'gx', door: 'P4_D', doorAt: [37.2, 11.8], info: PAV_INFO, note: PAV_NOTE });
+bld({ id: 'P4M', name: 'Mittelbau 4/9', x: 33.2, y: 13.2, w: 2, d: 1.6, h: 0.8, rh: 0.5, roof: 'gx', mat: 'plaster', src: 'r', info: 'Verbindungsbau.', note: 'Im Plan belegt.' });
+bld({ id: 'P5', name: 'Pavillon 5', x: 20, y: 1.6, w: 7.2, d: 3.2, roof: 'gx', door: 'P5_D', doorAt: [23.6, 1.6], info: PAV_INFO, note: PAV_NOTE });
+bld({ id: 'VER', name: 'Verwaltungsgebäude', x: 33.2, y: 0.8, w: 3.2, d: 8, h: 1.9, mat: 'brick', roof: 'hip', rh: 0.9, door: 'VER_D', doorAt: [36.4, 6],
+  info: 'Sitz der Hallenverwaltung der Hamburg-Amerika Linie. Hier liefen Listen, Umbuchungen und Telegramme zusammen.', note: 'Lage und L-Form nach Tafel Ia belegt.' });
+bld({ id: 'VER2', name: 'Verwaltungsgebäude', short: 'Verwaltung · Flügel', x: 28, y: 0.8, w: 5.2, d: 3.2, h: 1.9, mat: 'brick', roof: 'hip', rh: 0.9, info: 'Flügel des Verwaltungsgebäudes.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'CH', name: 'Kirche', short: 'Evang. und kathol. Kirche', x: 20, y: 8, w: 5.2, d: 4, h: 1.5, mat: 'brick', roof: 'gx', rh: 1.3, door: 'CH_D', doorAt: [25.2, 10],
+  info: 'Die Kirche für evangelische und katholische Gottesdienste, mitten in einer ovalen Gartenanlage. Sie wurde erst nach der Sturmflut von 1962 abgerissen.', note: 'Lage in der Gartenanlage nach Tafel Ia belegt.' });
+bld({ id: 'SHW', name: 'Speise-Hallen', x: 8.4, y: 6.8, w: 4.4, d: 11.2, h: 1.3, mat: 'brick', roof: 'gy', door: 'SHW_D', doorAt: [12.8, 12],
+  info: 'Große Speisehallen am westlichen Rand der reinen Seite.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'HS', name: 'Hôtel Süd', x: 11.6, y: 18, w: 9.2, d: 3.6, h: 1.45, roof: 'gx', door: 'HS_D', doorAt: [16.2, 18],
+  info: 'Logierhaus für Reisende mit mehr Geld – Zimmer statt Schlafsäle.', note: 'Name und Lage nach Tafel Ia belegt.' });
+bld({ id: 'HN', name: 'Hôtel Nord', x: 12.4, y: 1.2, w: 6.4, d: 4.4, h: 1.45, roof: 'gx', door: 'HN_D', doorAt: [15.6, 1.2],
+  info: 'Das zweite Logierhaus der Anlage, an der Harburger Chaussee.', note: 'Name und Lage nach Tafel Ia belegt; im Plan schräg gestellt.' });
+bld({ id: 'WERK', name: 'Werkstätten', x: 36.8, y: 30.4, w: 9.2, d: 2.4, mat: 'brick', roof: 'gx', rh: 0.6, info: 'Werkstätten der Anlage.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'STALL', name: 'Stall', x: 44.8, y: 27.6, w: 2, d: 2.4, mat: 'plaster', roof: 'gy', rh: 0.6, info: 'Stall.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'SYN', name: 'Synagoge', x: 40, y: 27.6, w: 2.8, d: 2, h: 1.3, mat: 'brick', roof: 'hip', rh: 0.8, door: 'SYN_D', doorAt: [41.4, 27.6],
+  info: 'Die Synagoge der Anlage – ein kleiner Bau zwischen Pavillons und Werkstätten. Ein großer Teil der Auswanderer über Hamburg kam aus dem jüdischen Osteuropa.', note: 'Lage nach Tafel Ia belegt.' });
+bld({ id: 'LAZ', name: 'Lazarett', x: 31.6, y: 28.4, w: 3.6, d: 2.8, mat: 'plaster', roof: 'gx', info: 'Lazarett der reinen Seite.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'BEA', name: 'Beamtenwohnungen', x: 27.2, y: 26.8, w: 3.6, d: 2.4, mat: 'brick', roof: 'gx', info: 'Wohnungen für Beamte der Anlage.', note: 'Nach Tafel Ia belegt („Beamte").' });
+// pavilions 25–30 south of the state railway, reached through a tunnel
+for (const [id, x0, y0, x1, y1, roof, dx, dy] of [['P25', 77.2, 41.6, 81.6, 44, 'gx', 79.4, 41.6], ['P26', 82, 42.4, 85.6, 48.8, 'gy', 82, 45.6], ['P27', 77.6, 51.6, 85.6, 54.2, 'gx', 81.6, 51.6],
+  ['P28', 69.6, 49.2, 77.4, 51.8, 'gx', 73.5, 49.2], ['P29', 60.8, 46.4, 68.8, 49, 'gx', 64.8, 46.4], ['P30', 52, 43.6, 60, 46.2, 'gx', 56, 43.6]])
+  bld({ id, name: 'Pavillon ' + id.slice(1), x: x0, y: y0, w: x1 - x0, d: y1 - y0, roof, door: id + '_D', doorAt: [dx, dy], info: PAV_INFO + ' Diese Reihe lag jenseits der Staatsbahn.', note: PAV_NOTE + ' Im Plan leicht schräg.' });
+// C – observation station, outside the halls across Wilhelmsburger Straße
+bld({ id: 'CN', name: 'Beobachtungsstation', short: 'Abt. C · Schlafräume', x: 95.2, y: 48.8, w: 16.8, d: 3.2, h: 1.05, cut: true, mat: 'brick', zone: 'C', doors: [[95.2, 50.4]], inner: [[103.6, 48.8, 103.6, 52, []]],
+  info: 'Abteilung C lag abseits: jenseits der Wilhelmsburger Straße, mit eigener Umzäunung. Wer unter Verdacht stand, blieb hier, bis der Befund feststand – das Schiff wartete nicht.', note: 'Lage und Grundriss nach Tafel Ia belegt (Schlafräume, Tagesräume, ärztliche Bäder).' });
+bld({ id: 'CS', name: 'Beobachtungsstation', short: 'Abt. C · Tagesräume', x: 95.2, y: 56, w: 16.8, d: 3.2, h: 1.05, cut: true, mat: 'brick', zone: 'C', doors: [[95.2, 57.6]], inner: [[103.6, 56, 103.6, 59.2, []]],
+  info: 'Tages- und Schlafräume der Beobachtungsstation. Im Spiel liegt hier das Isolierzimmer für Familien.', note: 'Nach Tafel Ia belegt; die Nutzung als Familienzimmer ist eine Spielentscheidung.' });
+bld({ id: 'CM', name: 'Ärztliche Bäder', short: 'Abt. C · Ärztliche Bäder', x: 100.8, y: 52, w: 5.6, d: 4, h: 1.1, mat: 'brick', roof: 'hip', rh: 0.7, zone: 'C', info: 'Mittelbau der Beobachtungsstation mit ärztlichen Bädern.', note: 'Nach Tafel Ia belegt.' });
+bld({ id: 'SIEL', name: 'Sielhaus', x: 92, y: 49.2, w: 1.6, d: 1, h: 0.8, mat: 'brick', roof: 'hip', rh: 0.4, zone: 'C', info: 'Sielhaus der Beobachtungsstation.', note: 'Nach Tafel Ia belegt.' });
+const BMAP = Object.fromEntries(BLD.map(b => [b.id, b]));
+
+const SPECIAL = [
+  { id: 'MUS', name: 'Musikpavillon', cx: 16.8, cy: 11.4, r: 0.75, src: 'b', info: 'Musikpavillon in der Gartenanlage vor der Kirche.', note: 'Nach Tafel Ia belegt („Musik-Pavillon").' },
+  { id: 'KG', name: 'Abwasser-Desinfektion', x: 36.6, y: 1.6, w: 1.2, d: 2.6, src: 'b', info: 'Das Abwasser wurde desinfiziert, bevor es in den Zollhafen gelangte – eine Lehre aus der Choleraepidemie von 1892.', note: 'Nach Tafel Ia belegt („D. Desinfection der Abwässer", „F. Faulgruben").' }
+];
+const GROUND_INFO = {
+  rail: { name: 'Bahnsteig der Sonderzüge', src: 'r', info: 'Die Anlage hatte einen eigenen Gleisanschluss vom Bahnhof Wilhelmsburg. So kamen die Auswanderer, ohne durch die Stadt zu müssen.', note: 'Der Gleisanschluss ist belegt; wo genau die Züge hielten, zeigt der Plan nicht. Lage rekonstruiert.' },
+  quay: { name: 'Anleger am Zollhafen', src: 'r', info: 'Nördlich der Harburger Chaussee lag der Zollhafen. Von hier brachten Tender die Auswanderer zu den Dampfern.', note: 'Zollhafen und Tender sind belegt, der Anleger ist rekonstruiert. Größere Dampfer legten teils in Cuxhaven ab.' },
+  bahn: { name: 'Staatsbahn und Tunnel', src: 'b', info: 'Die Staatsbahn schnitt die Anlage. Die Pavillons 25 bis 30 lagen jenseits der Gleise und waren durch einen Tunnel angebunden.', note: 'Nach Tafel Ia belegt.' },
+  wall: { name: 'Einfriedung', src: 'b', info: 'Eine Einfriedung umschloss die Anlage; Polizei und Gesundheitsaufsicht überwachten sie ständig.', note: 'Belegt; der genaue Verlauf folgt Tafel Ia.' },
+  road: { name: 'Wilhelmsburger Straße', src: 'b', info: 'Öffentliche Straße zwischen den Hallen und der Beobachtungsstation C.', note: 'Nach Tafel Ia belegt.' }
+};
+
+/* ---- path graph: hand-placed nodes + nodes generated along the streets ---- */
+const NODES = {
+  PLAT_W: [42, -3.0], PLAT: [45.8, -3.0], PLAT_E: [52, -3.0], R_A: [45.8, -1.4], R_L: [52, -1.4], R_Q: [31.5, -1.4], R_G: [38.2, -1.4], R_J: [59.5, -1.4],
+  QUAY: [31.5, -4.6], PONT: [31.5, -6.6],
+  A_ENT: [45.8, 1.6], REG: [42.9, 3.4], D_RE: [46.6, 3.4], EXAM: [48.5, 3.4], LUG_N: [52, 1.6], LUG: [52, 3.4], D_LE: [50.4, 4.4],
+  EXAM_S: [48.5, 5.2], HOF1: [48.5, 9], P2_D: [46.6, 9], WAIT: [45, 9], HOF1_S: [48.5, 13.2], CORR: [45, 13.2], HOF2: [42.7, 13.2],
+  BF_N: [42.7, 13.6], BATH_F: [41.4, 15.4], BF_S: [41.4, 17.2], BM_N: [49.8, 13.6], BATH_M: [51.4, 15.4], BM_S: [51.4, 17.2], DIS_N: [47.6, 13.6], DIS: [46.4, 15.4], DIS_S: [46.4, 17.2],
+  KP_F: [41.4, 18.6], KP_D: [46.4, 18.6], KP_M: [51.4, 18.6], M38: [38.2, 18.6], M58: [57.9, 18.6], M67: [67.4, 18.6], M77: [77, 18.6], G_N: [38.2, 0.2],
+  P17_WS: [69.8, 18.6], P17_MS: [69.8, 28.8], SPJ_S: [66.4, 18.6], SPC_S: [57.9, 8.2],
+  P17_WD: [69.8, 20.8], P17_W: [69.8, 22.6], P17_MD: [69.8, 28], P17_M: [69.8, 26.2], SPJ_D: [66.4, 17.6], SPJ: [66.4, 15.2], SPC_D: [58.2, 8.2], SPC: [58.2, 5.6],
+  LAWN: [81.4, 27], TUN_N: [76.8, 37.4], TUN_S: [76.8, 41.2], S30: [56, 42.8], S30B: [61, 43.4], S29: [64.8, 45.6], S28: [73.4, 48.4], S27: [81.6, 50.8], P26_P: [81, 45.6], LOOK: [85.3, 50.2],
+  W1: [73.6, 10.8], W2: [87.8, 21.8], W3: [87.8, 40], W4: [87.8, 54], C_GATE: [89.6, 54], C_YARD: [92.2, 54], CN_D: [95.2, 50.4], COBS: [99.4, 50.4], CS_D: [95.2, 57.6], CFAM: [99.4, 57.6], D_SPOT: [90.2, 51.6],
+  O0: [29.2, 9.6], O1: [26.2, 14.8], O2: [19.6, 16.8], O3: [14.6, 14.6], O4: [13.4, 9.6], O5: [14.4, 6.2], O6: [19.6, 5.9], O7: [26.2, 5.9], MUS_P: [16.8, 12.6]
+};
+const CHAINS = [
+  ['PLAT_W', 'PLAT', 'PLAT_E'], ['PLAT', 'R_A'], ['PLAT_E', 'R_L'], ['R_Q', 'QUAY', 'PONT'],
+  ['R_A', 'A_ENT', 'REG', 'D_RE', 'EXAM', 'EXAM_S', 'HOF1', 'HOF1_S'], ['HOF1', 'P2_D', 'WAIT'],
+  ['HOF1_S', 'BM_N', 'BATH_M', 'BM_S', 'KP_M'], ['HOF1_S', 'DIS_N', 'DIS', 'DIS_S', 'KP_D'], ['HOF1_S', 'CORR', 'HOF2', 'BF_N', 'BATH_F', 'BF_S', 'KP_F'],
+  ['R_L', 'LUG_N', 'LUG', 'D_LE', 'EXAM'],
+  ['P17_WS', 'P17_WD', 'P17_W'], ['P17_MS', 'P17_MD', 'P17_M'], ['SPJ_S', 'SPJ_D', 'SPJ'], ['SPC_S', 'SPC_D', 'SPC'],
+  ['LAWN', 'LAWN_S'], ['TUN_N', 'TUN_S', 'S28', 'S27', 'LOOK'], ['S30', 'S30B', 'S29', 'S28'], ['TUN_S', 'P25_D'], ['TUN_S', 'P26_P', 'P26_D'],
+  ['S30', 'P30_D'], ['S29', 'P29_D'], ['S28', 'P28_D'], ['S27', 'P27_D'],
+  ['R_J', 'W1', 'W2', 'W3', 'W4', 'C_GATE', 'C_YARD'], ['C_YARD', 'CN_D', 'COBS'], ['C_YARD', 'CS_D', 'CFAM'], ['C_YARD', 'D_SPOT'],
+  ['O0', 'O1', 'O2', 'O3', 'O4', 'O5', 'O6', 'O7', 'O0'], ['O2', 'MUS_P'], ['O3', 'SHW_D'], ['O2', 'HS_D'], ['O2', 'E_MAIN_0'], ['O6', 'O6_S'], ['CH_D', 'O0']
+];
+const STREETS_H = [['FRONT', 0.2, 8, 38.2], ['MAIN', 18.6, 21.2, 77], ['MID', 28.8, 47.4, 77], ['RG', 27.2, 37.7, 41.4], ['OV', 9.6, 29.2, 38.2], ['ROAD', -1.4, -4, 59.5]];
+const STREETS_V = [['L38', 38.2, -1.4, 18.6], ['L47', 47.4, 18.6, 28.8], ['L58', 57.9, 8.2, 28.8], ['L67', 67.4, 18.6, 28.8], ['L77', 77, 18.6, 37.4], ['L37', 37.7, 18.6, 27.2], ['L29', 29.2, 9.6, 18.6]];
+const STREET_NODES = {};
+(function buildStreetGraph() {
+  const put = (k, p) => { for (const [id, q] of Object.entries(NODES)) if (Math.abs(q[0] - p[0]) < 0.05 && Math.abs(q[1] - p[1]) < 0.05) return id; NODES[k] = p; return k; };
+  STREETS_H.forEach(([n, y, x0, x1]) => { put('E_' + n + '_0', [x0, y]); put('E_' + n + '_1', [x1, y]); });
+  STREETS_V.forEach(([n, x, y0, y1]) => { put('E_' + n + '_0', [x, y0]); put('E_' + n + '_1', [x, y1]); });
+  STREETS_H.forEach(([hn, y, x0, x1]) => STREETS_V.forEach(([vn, x, y0, y1]) => { if (x >= x0 - 0.01 && x <= x1 + 0.01 && y >= y0 - 0.01 && y <= y1 + 0.01) put('X_' + hn + '_' + vn, [x, y]); }));
+  NODES.O6_S = [19.6, 0.2]; NODES.LAWN_S = [77, 27];
+  // doors of closed buildings → nearest street
+  for (const b of BLD) if (b.door && b.doorAt) {
+    NODES[b.door] = b.doorAt; if (CHAINS.some(c => c.includes(b.door))) continue;
+    let best = null, bd = 1e9; const [dx, dy] = b.doorAt;
+    for (const [, y, x0, x1] of STREETS_H) { const fx = clamp(dx, x0, x1), d = Math.hypot(fx - dx, y - dy); if (d < bd) { bd = d; best = [fx, y]; } }
+    for (const [, x, y0, y1] of STREETS_V) { const fy = clamp(dy, y0, y1), d = Math.hypot(x - dx, fy - dy); if (d < bd) { bd = d; best = [x, fy]; } }
+    if (best && bd < 6) CHAINS.push([put(b.door + '_S', best), b.door]);
+  }
+  for (const [n, y, x0, x1] of STREETS_H) { const ids = Object.keys(NODES).filter(k => Math.abs(NODES[k][1] - y) < 0.05 && NODES[k][0] >= x0 - 0.05 && NODES[k][0] <= x1 + 0.05).sort((a, b) => NODES[a][0] - NODES[b][0]); STREET_NODES[n] = ids; CHAINS.push(ids); }
+  for (const [n, x, y0, y1] of STREETS_V) { const ids = Object.keys(NODES).filter(k => Math.abs(NODES[k][0] - x) < 0.05 && NODES[k][1] >= y0 - 0.05 && NODES[k][1] <= y1 + 0.05).sort((a, b) => NODES[a][1] - NODES[b][1]); STREET_NODES[n] = ids; CHAINS.push(ids); }
+})();
+
+const ROOMS = {
+  REG: { x: 39.5, y: 2.7, w: 6.8, d: 2.2, node: 'REG', label: 'Registrierung', stage: 1 },
+  EXAM: { x: 46.9, y: 2.7, w: 3.2, d: 2.2, node: 'EXAM', label: 'Untersuchung', stage: 2 },
+  LUG: { x: 50.7, y: 1.9, w: 2.6, d: 3, node: 'LUG', label: 'Gepäck', stage: 1 },
+  WAIT: { x: 43.7, y: 5.5, w: 2.6, d: 7, node: 'WAIT', label: 'Pavillon 2', stage: 2 },
+  BATH_M: { x: 49.5, y: 13.9, w: 3.8, d: 3, node: 'BATH_M', label: 'Bad Männer', stage: 2 },
+  BATH_F: { x: 39.5, y: 13.9, w: 3.8, d: 3, node: 'BATH_F', label: 'Bad Frauen', stage: 2 },
+  DIS: { x: 43.9, y: 13.9, w: 5, d: 3, node: 'DIS', label: 'Maschinen · Desinfektion', stage: 2 },
+  HOF1: { x: 46.9, y: 5.6, w: 3.2, d: 7, node: 'HOF1', label: '' },
+  COBS: { x: 95.5, y: 49.1, w: 7.8, d: 2.6, node: 'COBS', label: 'Schlafräume', stage: 2 },
+  CFAM: { x: 95.5, y: 56.3, w: 7.8, d: 2.6, node: 'CFAM', label: 'Isolierzimmer', stage: 2 },
+  CYARD: { x: 89.8, y: 48.4, w: 5, d: 11, node: 'C_YARD', label: '' },
+  SPJ: { x: 64.3, y: 13.1, w: 4.2, d: 4.2, node: 'SPJ', label: 'Säle für Juden' },
+  SPC: { x: 56.3, y: 3.3, w: 3.8, d: 4.6, node: 'SPC', label: 'Säle für Christen' },
+  LAWN: { x: 78.2, y: 21, w: 6.8, d: 15, node: 'LAWN', label: '' },
+  OVAL: { x: 14, y: 4, w: 11, d: 11, node: 'O2', label: '' }
+};
+const SPOTS = { lookC: [85.3, 50.2], dawidFence: [89.9, 51.6], mendelYard: [90.6, 56.2], nurse: [93.2, 54.6], doc: [48, 2.4], meetB: [46.4, 19.2] };
+
+/* ---- beds, seats, trees, lamps ---- */
+const BEDS = [];
+function addBed(x, y, room) { BEDS.push({ x, y, room, occ: null }); }
+for (const yy of [24.9, 25.5, 26.1, 26.7, 27.3]) { addBed(69, yy, 'P17M'); addBed(70.6, yy, 'P17M'); }
+for (const yy of [21.5, 22.1, 22.7, 23.3, 23.9]) { addBed(69, yy, 'P17W'); addBed(70.6, yy, 'P17W'); }
+for (const yy of [5.9, 6.5, 7.1, 7.7, 8.3, 9.9, 10.5, 11.1, 11.7, 12.3]) { addBed(44.0, yy, 'WAIT'); if (yy < 8.5 || yy > 9.6) addBed(45.9, yy, 'WAIT'); }
+for (const yy of [5.9, 6.7, 7.5, 8.3, 9.1, 9.9, 10.7, 11.5]) { addBed(51.1, yy, 'AP1'); addBed(52.9, yy, 'AP1'); addBed(40.6, yy, 'AP3'); }
+for (const x of [96.4, 97.6, 98.8, 100, 101.2]) { addBed(x, 49.5, 'COBS'); }
+for (const [x, y] of [[96.4, 56.8], [97.6, 56.8], [98.8, 56.8], [100, 56.8]]) addBed(x, y, 'CFAM');
+const SEATS = [];
+function tables(x0, x1, rows, room) { for (const ty of rows) for (let x = x0 + 0.3; x < x1 - 0.2; x += 0.55) { SEATS.push({ x, y: ty - 0.32, room, occ: null }); SEATS.push({ x, y: ty + 0.32, room, occ: null }); } }
+tables(64.6, 68.2, [14.0, 15.3, 16.6], 'SPJ'); tables(56.6, 59.8, [4.2, 5.5, 6.8], 'SPC');
+const TREES = [
+  [11.8, 3.8], [13.4, 7.4], [25, 13.8], [27.2, 8], [22, 15.8], [13.8, 13.2], [18.4, 16.2], [26.6, 11.6],
+  [79, 22], [84.6, 22.4], [79.4, 34.8], [84.6, 34.2], [84.8, 28.6], [53.6, 42.2], [57.4, 41.4], [70, 45.2], [79, 46.4],
+  [85.2, 12], [85.8, 30], [85.8, 38], [2.8, 20.8], [4.8, 12], [6.6, 5], [90.8, 58.8], [114.6, 49], [114.6, 59], [93.8, 48.2], [36, 35], [30.4, 33.8],
+  [-4, 3], [2, 26], [70, 58], [100, 64], [120, 55], [118, 40], [50, 50.5]
+];
+const LAMPS = [[25, 19.2], [35, 19.2], [45, 19.2], [55, 19.2], [65, 19.2], [75, 19.2], [52, 29.4], [62, 29.4], [72, 29.4], [38.8, 5], [38.8, 12], [38.8, 0.8],
+  [20.2, 0.8], [44, -2.8], [50, -2.8], [31, -5], [92.8, 54.8], [77.6, 36.6], [29.8, 14], [30, 9]];
+
+/* ---- render-only geometry ---- */
+const FURN = [
+  ['desk', 40, 2.1, 41.6, 2.45, 0.28], ['desk', 42.4, 2.1, 44, 2.45, 0.28], ['desk', 44.6, 2.1, 46.2, 2.45, 0.28], ['counter', 50.8, 3.9, 53.2, 4.2, 0.28],
+  ['crate', 51, 2.1, 51.45, 2.42, 0.22], ['crate', 51.7, 2.2, 52.15, 2.52, 0.3], ['crate', 52.6, 2.0, 53.05, 2.32, 0.22],
+  ['exam', 47.2, 2.0, 47.8, 2.5, 0.3], ['exam', 48.9, 2.0, 49.9, 2.4, 0.3],
+  ['appar', 44.3, 14.6, 48.7, 15.8, 0.9],
+  ['table', 64.6, 13.86, 68.2, 14.14, 0.22], ['table', 64.6, 15.16, 68.2, 15.44, 0.22], ['table', 64.6, 16.46, 68.2, 16.74, 0.22],
+  ['table', 56.6, 4.06, 59.8, 4.34, 0.22], ['table', 56.6, 5.36, 59.8, 5.64, 0.22], ['table', 56.6, 6.66, 59.8, 6.94, 0.22],
+  ['table', 99.2, 57.9, 101.6, 58.3, 0.2]
+];
+const SHOWERS = []; for (let x = 39.9; x < 43.2; x += 0.7) SHOWERS.push([x, 16.9]); for (let x = 49.9; x < 53.2; x += 0.7) SHOWERS.push([x, 16.9]);
+const TD_INNER = {};
+const FENCES = [];
+(function () {
+  const add = (x0, y0, x1, y1, o = {}) => FENCES.push(Object.assign({ x0, y0, x1, y1 }, o));
+  // A: close the corridor ends
+  add(39.2, 12.8, 39.2, 13.6, { col: 'rust' }); add(53.6, 12.8, 53.6, 13.6, { col: 'rust' });
+  // C compound
+  add(89.2, 47.6, 115.6, 47.6, { col: 'obs' }); add(89.2, 60.4, 115.6, 60.4, { col: 'obs' }); add(115.6, 47.6, 115.6, 60.4, { col: 'obs' });
+  add(89.2, 47.6, 89.2, 53.4, { col: 'obs' }); add(89.2, 54.6, 89.2, 60.4, { col: 'obs' });
+  // site enclosure (axis-parallel parts); the rest is drawn along the site polygon
+  add(10, -0.4, 37.6, -0.4, { wall: 1 }); add(38.8, -0.4, 39.2, -0.4, { wall: 1 }); add(53.6, -0.4, 58, -0.4, { wall: 1 });
+})();
+const ROUTES = [
+  { ids: ['PLAT', 'R_A', 'A_ENT', 'REG'], st: 0 },
+  { ids: ['REG', 'D_RE', 'EXAM', 'EXAM_S', 'HOF1', 'HOF1_S', 'BM_N', 'BATH_M', 'BM_S', 'KP_M'], st: 2 },
+  { ids: ['HOF1_S', 'CORR', 'HOF2', 'BF_N', 'BATH_F', 'BF_S', 'KP_F'], st: 2 },
+  { ids: ['KP_M', 'M58', 'M67', 'P17_WS', 'P17_WD'], st: 3 },
+  { ids: ['M38', 'E_OV_1', 'G_N', 'R_G', 'R_Q', 'QUAY', 'PONT'], st: 4 },
+  { ids: ['PLAT_E', 'R_L', 'LUG_N', 'LUG', 'D_LE', 'EXAM'], st: 5 },
+  { ids: ['R_A', 'R_J', 'W1', 'W2', 'W3', 'W4', 'C_GATE', 'C_YARD'], st: 6 }
+];
+for (const r of ROUTES) r.ids = r.ids.filter(k => NODES[k] || console.error('route node missing', k));
+const ROUTE_COL = ['#6b5641', '#a3432a', '#a3432a', '#5f7a3f', '#3f5a73', '#8c7458', '#8a2a22'];
+const STAGE_POS = [[44, -3.4], [41, 2.3], [46.4, 13.9], [62, 19.3], [30.8, -6]];
+const STAGE_AREAS = [[40, -4.4, 55, -2.4], [39.2, 1.6, 53.6, 5.2], [39.2, 5.2, 53.6, 17.2], [21, 18, 77, 36.4], [26, -10, 34, -2.4]];
+const GLINTS = []; srand(7); for (let i = 0; i < 160; i++) GLINTS.push([-10 + sr() * 130, -16 + sr() * 10.4, sr() * 6, 2 + Math.floor(sr() * 3)]);
+const LABELS = [
+  ['A · UNREINE SEITE', 46.4, -0.1, 'rust', 1], ['B · REINE SEITE', 81.6, 30.6, 'clean', 1], ['C · BEOBACHTUNGSSTATION', 102.4, 61.4, 'obs', 1],
+  ['ZOLLHAFEN', 50, -12, 'water5', 2], ['HARBURGER CHAUSSEE', 16, -1.5, 'ink2', 1], ['WILHELMSBURGER STR.', 87.8, 32, 'ink2', 1], ['AUFFAHRTSTRASSE', 108, 45.8, 'ink2', 1],
+  ['STAATSBAHN', 58, 39.4, 'ink2', 1], ['TUNNEL', 76.8, 40.3, 'ink2', 1], ['BAHNSTEIG', 47, -2.9, 'ink2', 1], ['HOF', 48.5, 10.4, 'ink2', 1], ['KÜCHEN', 62.2, 10.5, 'ink2', 1],
+  ['MÄNNER', 69.8, 27.7, 'ink2', 1], ['FRAUEN · KINDER', 69.8, 21.1, 'ink2', 1], ['GARTEN', 17.6, 14.6, 'grass3', 1]
+];
+/* walls of the buildings shown opened up (iso: A, C, P17, SP; top-down: all) */
+function wallsOf(b, withGaps) {
+  const out = [], X1 = b.x + b.w, Y1 = b.y + b.d, far = b.h * 0.62;
+  const doors = b.doors ? b.doors.slice() : [];
+  if (b.door && NODES[b.door]) doors.push(NODES[b.door]);
+  const edge = (ax, ay, bx, by, h, kind, gaps) => {
+    const horiz = Math.abs(ay - by) < 1e-6, lo = horiz ? Math.min(ax, bx) : Math.min(ay, by), hi = horiz ? Math.max(ax, bx) : Math.max(ay, by);
+    let cur = lo; const push = (a0, a1) => { if (a1 - a0 > 0.05) out.push(horiz ? { x0: a0, y0: ay, x1: a1, y1: ay, h, kind, b } : { x0: ax, y0: a0, x1: ax, y1: a1, h, kind, b }); };
+    for (const g of gaps.slice().sort((p, q) => p - q)) { if (g < lo || g > hi) continue; push(cur, g - 0.5); cur = g + 0.5; } push(cur, hi);
+  };
+  const dg = (horiz, c) => doors.filter(d => horiz ? Math.abs(d[1] - c) < 0.01 : Math.abs(d[0] - c) < 0.01).map(d => horiz ? d[0] : d[1]);
+  edge(b.x, b.y, X1, b.y, far, 'far', dg(true, b.y)); edge(b.x, b.y, b.x, Y1, far, 'far', dg(false, b.x));
+  edge(b.x, Y1, X1, Y1, 0.22, 'near', dg(true, Y1)); edge(X1, b.y, X1, Y1, 0.22, 'near', dg(false, X1));
+  for (const iw of b.inner || []) edge(iw[0], iw[1], iw[2], iw[3], 0.22, 'inner', iw[4]);
+  return out;
+}
+const ISO_WALLS = []; for (const b of BLD) if (b.cut) ISO_WALLS.push(...wallsOf(b));
+function nightK() { const t = (clock % 1440) / 60; if (t >= 7 && t < 18) return 0; if (t >= 18 && t < 21) return (t - 18) / 3; if (t >= 21 || t < 4.5) return 1; return 1 - (t - 4.5) / 2.5; }
+function doorBuilding(node) { for (const b of BLD) if (b.door === node) return b; return null; }
+function inRect(p, r) { return p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]; }
+
+/* ---------------------------------------------------------------------
+   GRAPH – two shortest-path tables: everyone, and the clean side only
+   (people who are through the bath never walk back through Abteilung A)
+   --------------------------------------------------------------------- */
+const NID = Object.keys(NODES), NIX = Object.fromEntries(NID.map((k, i) => [k, i])), NN = NID.length;
+const UNCLEAN = k => { const p = NODES[k]; return p[0] > 38.9 && p[0] < 54.1 && p[1] > 1.5 && p[1] < 17.3; };
+function floyd(skip) {
+  const DIST = new Float32Array(NN * NN).fill(1e9), NEXT = new Int16Array(NN * NN).fill(-1);
+  for (let i = 0; i < NN; i++) { DIST[i * NN + i] = 0; NEXT[i * NN + i] = i; }
+  for (const ch of CHAINS) for (let i = 0; i < ch.length - 1; i++) {
+    const a = NIX[ch[i]], b = NIX[ch[i + 1]];
+    if (a === undefined || b === undefined) { console.error('bad node', ch[i], ch[i + 1]); continue; }
+    if (skip(ch[i]) || skip(ch[i + 1])) continue;
+    const [ax, ay] = NODES[ch[i]], [bx, by] = NODES[ch[i + 1]], d = Math.hypot(ax - bx, ay - by);
+    if (d < DIST[a * NN + b]) { DIST[a * NN + b] = DIST[b * NN + a] = d; NEXT[a * NN + b] = b; NEXT[b * NN + a] = a; }
+  }
+  for (let k = 0; k < NN; k++) for (let i = 0; i < NN; i++) { const ik = DIST[i * NN + k]; if (ik >= 1e9) continue;
+    for (let j = 0; j < NN; j++) { const v = ik + DIST[k * NN + j]; if (v < DIST[i * NN + j]) { DIST[i * NN + j] = v; NEXT[i * NN + j] = NEXT[i * NN + k]; } } }
+  return { DIST, NEXT };
+}
+const G_ALL = floyd(() => false), G_CLEAN = floyd(UNCLEAN);
+function nearestNode(x, y) { let best = null, bd = 1e9; for (const k of NID) { const [nx, ny] = NODES[k], d = (nx - x) ** 2 + (ny - y) ** 2; if (d < bd) { bd = d; best = k; } } return best; }
+function nodePath(from, to, G = G_ALL) {
+  let i = NIX[from], j = NIX[to]; const out = [from];
+  if (G.NEXT[i * NN + j] < 0) { if (G !== G_ALL) return nodePath(from, to, G_ALL); return out.concat([to]); }
+  while (i !== j) { i = G.NEXT[i * NN + j]; out.push(NID[i]); } return out;
+}
+
+/* ---------------------------------------------------------------------
+   STATE
+   --------------------------------------------------------------------- */
+const START_DAY = new Date(1907, 8, 12);
+let clock = 15 * 60;             // minutes since day 0, 00:00
+let speed = 2, lastSpeed = 2, paused = false;
+let agents = [], AID = 1;
+let showPlan = true, showSrc = false;
+let selected = null, hovered = null;
+let phase = 'day';               // day | shipGone | epilogue | end
+const barge = { x: BARGE_DOCK, state: 'docked', count: 0, alpha: 1 };
+const train = { x: -30, state: 'away', target: 15, cb: null, dir: 1, label: '' };
+const EVENTS = [];
+const CASE = { state: 'none', decision: null, truth: Math.random() < 0.5, second: null, fam: {}, sync: {}, outcomeDone: false, telegram: null };
+let logEntries = [];
+const FLASH = { stage: -1, t: 0 };
+
+/* ---------------------------------------------------------------------
+   PEOPLE
+   --------------------------------------------------------------------- */
+const NAMES = {
+  pl: { m: ['Jan', 'Józef', 'Stanisław', 'Wojciech', 'Antoni', 'Franciszek', 'Michał'], f: ['Maria', 'Katarzyna', 'Agnieszka', 'Marianna', 'Zofia', 'Jadwiga'], s: ['Kowalski', 'Nowak', 'Wiśniewski', 'Kaczmarek', 'Mazur', 'Zieliński', 'Krawczyk'], from: ['Płock', 'Łomża', 'Suwałki', 'Kalisz'], rel: 'c' },
+  ju: { m: ['Mosche', 'Chaim', 'Lejb', 'Itzek', 'Schmuel', 'Hersch', 'Abram'], f: ['Rifka', 'Sura', 'Ester', 'Feige', 'Chaja', 'Mirjam'], s: ['Goldberg', 'Rabinowitz', 'Kaplan', 'Friedman', 'Lipschitz', 'Segal', 'Brodsky'], from: ['Wilna', 'Grodno', 'Białystok', 'Minsk', 'Berditschew'], rel: 'j' },
+  lt: { m: ['Jonas', 'Petras', 'Antanas', 'Kazys'], f: ['Ona', 'Marė', 'Elzbieta'], s: ['Kazlauskas', 'Petrauskas', 'Jankauskas'], from: ['Kowno', 'Schaulen', 'Ponewesch'], rel: 'c' },
+  hu: { m: ['István', 'János', 'Ján', 'Mihály', 'Andrej'], f: ['Erzsébet', 'Mária', 'Anna', 'Zuzana'], s: ['Nagy', 'Tóth', 'Horváth', 'Kováč', 'Varga'], from: ['Kaschau', 'Eperies', 'Bartfeld'], rel: 'c' },
+  ru: { m: ['Iwan', 'Hryhorij', 'Wasyl'], f: ['Paraska', 'Hanna', 'Olena'], s: ['Kowalenko', 'Melnyk', 'Schewtschuk'], from: ['Tarnopol', 'Stanislau', 'Kolomea'], rel: 'c' }
+};
+const DEST = ['New York', 'Chicago, Ill.', 'Pittsburgh, Pa.', 'Cleveland, O.', 'Milwaukee, Wis.', 'Scranton, Pa.', 'Baltimore, Md.', 'Philadelphia, Pa.'];
+const COATS = ['#4a3f36', '#5b4a3a', '#3e4650', '#6a5a44', '#4f4a40', '#5d3f35', '#3f3a34', '#6d6250', '#43504a', '#574338'];
+const SCARF = ['#8a6d3a', '#7b3a2c', '#a88d5e', '#5b6b73', '#9a7a55', '#6f4a3a', '#b6a27a'];
+const SKIN = ['#e7c9a8', '#dcb893', '#e9cfb2', '#d8b08c'];
+
+function mkAgent(o) {
+  const a = Object.assign({
+    id: AID++, x: 0, y: 0, sc: 1, speed: 1.7, role: 'emi', sex: 'm', age: 30, coat: pick(COATS), skin: pick(SKIN),
+    hat: null, scarf: null, skirt: false, bundle: false, tasks: [], path: [], node: null, hidden: false, pose: 'stand',
+    walking: false, phase: Math.random() * 6, status: '', dead: false, follow: null, plan: null, dir: [1, 0], off: [0, 0]
+  }, o);
+  if (a.sex === 'f' && a.age >= 5) { a.skirt = true; if (!a.hat) a.hat = 'scarf'; if (!a.scarf) a.scarf = pick(SCARF); }
+  if (a.age < 14 && !o.sc) a.sc = a.age < 8 ? 0.6 : 0.74;
+  if (a.age >= 60) { a.speed *= 0.72; if (!a.hat || a.hat === 'scarf') { if (a.sex === 'm') a.hat = 'grey'; } }
+  if (a.age < 14) a.speed *= 0.95;
+  if (a.node == null) a.node = nearestNode(a.x, a.y);
+  agents.push(a); return a;
+}
+function emigrantGroup(x, y, opts = {}) {
+  const nat = opts.nat || pick(['pl', 'pl', 'ju', 'ju', 'ju', 'lt', 'hu', 'hu', 'ru']);
+  const N = NAMES[nat], sur = pick(N.s), from = pick(N.from), dest = pick(DEST);
+  const kind = opts.kind || pick(['single', 'single', 'single', 'family', 'family', 'couple', 'elder']);
+  const members = [];
+  const base = { nat, rel: N.rel, from, dest, surname: sur };
+  const mk = (sex, age, extra = {}) => mkAgent(Object.assign({}, base, { x: x + rnd(-0.3, 0.3), y: y + rnd(-0.3, 0.3), sex, age, name: pick(N[sex]) + ' ' + sur }, extra));
+  if (kind === 'single') { const s = opts.sex || (Math.random() < 0.72 ? 'm' : 'f'); members.push(mk(s, ri(17, 34), { bundle: true, hat: s === 'm' ? pick(['cap', 'cap', 'hat', null]) : null })); }
+  else if (kind === 'couple') { members.push(mk('m', ri(22, 40), { bundle: true, hat: pick(['cap', 'hat']) })); members.push(mk('f', ri(20, 38), { bundle: true })); }
+  else if (kind === 'elder') { members.push(mk('m', ri(58, 70), { hat: 'hat', bundle: true })); members.push(mk('f', ri(55, 68), { bundle: true })); members.push(mk(pick(['m', 'f']), ri(20, 30), { bundle: true })); }
+  else { members.push(mk('m', ri(28, 45), { bundle: true, hat: pick(['cap', 'hat']) })); members.push(mk('f', ri(25, 40), { bundle: true }));
+    for (let i = 0, n = ri(1, 4); i < n; i++) members.push(mk(pick(['m', 'f']), ri(1, 13))); }
+  const L = members[0]; L.group = members; L.kind = kind;
+  members.forEach((m, i) => { m.group = members; if (i > 0) { const ang = i * 2.1, r = 0.34 + 0.08 * i; m.follow = { leader: L, ox: Math.cos(ang) * r, oy: Math.sin(ang) * r }; } });
+  return L;
+}
+function staff(o) {
+  const a = mkAgent(Object.assign({ role: 'staff', age: 40, speed: 1.6 }, o));
+  a.tasks.push({ t: 'spot', p: [a.x, a.y] });
+  return a;
+}
+
+/* ---------------------------------------------------------------------
+   TASKS / MOVEMENT
+   --------------------------------------------------------------------- */
+function spotIn(r, half) {
+  const R = ROOMS[r]; let x0 = R.x + 0.25, x1 = R.x + R.w - 0.25;
+  if (half === 'm') x1 = R.x + R.w / 2 - 0.2; if (half === 'f') x0 = R.x + R.w / 2 + 0.2;
+  return [rnd(x0, x1), rnd(R.y + 0.25, R.y + R.d - 0.25)];
+}
+function routeTo(a, target) {
+  const start = a.node && NODES[a.node] ? a.node : nearestNode(a.x, a.y);
+  if (!NODES[target]) { console.error('unknown node', target, a.name); return []; }
+  const G = a.clean && !UNCLEAN(start) && !UNCLEAN(target) ? G_CLEAN : G_ALL;
+  const ids = nodePath(start, target, G);
+  const o = a.off || [0, 0];
+  return ids.map((k, i) => [NODES[k][0] + (i === 0 || i === ids.length - 1 ? 0 : o[0]), NODES[k][1] + (i === 0 || i === ids.length - 1 ? 0 : o[1])]);
+}
+function moveToward(a, tx, ty, step) {
+  const dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy);
+  if (d <= step || d < 1e-4) { a.x = tx; a.y = ty; return 0; }
+  a.x += dx / d * step; a.y += dy / d * step; a.dir = [dx / d, dy / d]; return d - step;
+}
+function stepAgent(a, dt) {
+  if (a.follow) {
+    const L = a.follow.leader;
+    if (!L || L.dead) { a.dead = true; return; }
+    a.hidden = L.hidden; a.pose = L.pose;
+    const tx = L.x + a.follow.ox, ty = L.y + a.follow.oy;
+    const d = Math.hypot(tx - a.x, ty - a.y);
+    if (d > 3) { a.x = tx; a.y = ty; }
+    a.walking = d > 0.05; if (a.walking) { moveToward(a, tx, ty, dt * a.speed * 1.6); a.phase += dt * 9; }
+    return;
+  }
+  if (a.path.length) {
+    a.pose = 'stand'; a.walking = true; let step = dt * a.speed;
+    while (step > 0 && a.path.length) { const [tx, ty] = a.path[0]; const rem = Math.hypot(tx - a.x, ty - a.y);
+      if (rem <= step) { a.x = tx; a.y = ty; a.path.shift(); step -= rem; } else { moveToward(a, tx, ty, step); step = 0; } }
+    a.phase += dt * 9; return;
+  }
+  a.walking = false;
+  for (let guard = 0; guard < 20; guard++) {
+    const t = a.tasks[0];
+    if (!t) { if (a.plan) { a.plan(a); if (!a.tasks.length) return; continue; } return; }
+    switch (t.t) {
+      case 'go': a.path = routeTo(a, t.n); a.node = t.n; a.tasks.shift(); return;
+      case 'room': { const R = ROOMS[t.r]; a.path = routeTo(a, R.node); a.node = R.node; a.room = t.r;
+        a.path.push(t.p || spotIn(t.r, t.half)); a.tasks.shift(); return; }
+      case 'spot': a.path = [t.p]; a.tasks.shift(); return;
+      case 'wait': if (t.left === undefined) t.left = t.dur; t.left -= dt; if (t.left > 0) return; a.tasks.shift(); dt = 0; break;
+      case 'until': if (clock < t.at) return; a.tasks.shift(); break;
+      case 'waitFor': if (!t.fn()) return; a.tasks.shift(); break;
+      case 'sync': { const S = CASE.sync[t.id] = CASE.sync[t.id] || new Set(); S.add(a.id); if (S.size < t.n) return; a.tasks.shift(); break; }
+      case 'pose': a.pose = t.v; a.tasks.shift(); break;
+      case 'hide': a.hidden = true; a.hideB = doorBuilding(a.node); a.tasks.shift(); break;
+      case 'show': a.hidden = false; a.hideB = null; a.tasks.shift(); break;
+      case 'status': a.status = t.v; a.tasks.shift(); break;
+      case 'do': a.tasks.shift(); t.fn(a); break;
+      case 'board': barge.count += 1 + (a.group ? a.group.filter(m => m.follow && m.follow.leader === a && !m.dead).length : 0); kill(a); a.tasks.length = 0; return;
+      case 'train': kill(a); a.tasks.length = 0; return;
+      case 'vanish': kill(a); a.tasks.length = 0; return;
+      default: a.tasks.shift();
+    }
+  }
+}
+function kill(a) { a.dead = true; if (a.bed) { a.bed.occ = null; a.bed = null; } if (a.seat) { a.seat.occ = null; a.seat = null; }
+  if (a.group) a.group.forEach(m => { if (m.follow && m.follow.leader === a) { m.dead = true; } }); }
+
+function freeBed(room) { return BEDS.find(b => b.room === room && !b.occ); }
+function freeSeat(room) { const s = SEATS.filter(s => s.room === room && !s.occ); return s.length ? pick(s) : null; }
+/* planner for ordinary residents (leaders / singles) */
+const IDLE_NODES = () => [...STREET_NODES.MAIN, ...STREET_NODES.MID, ...STREET_NODES.L77, 'O0', 'O1', 'O2', 'O3', 'O5', 'O6', 'O7', 'LAWN', 'LAWN', 'MUS_P', 'S29', 'S28'];
+function planResident(a) {
+  const now = clock, tod = now % 1440;
+  if (a.booked && now >= a.leaveAt && !a.leaving) {
+    a.leaving = true;
+    a.tasks.push({ t: 'show' }, { t: 'status', v: 'geht zur Einschiffung' }, { t: 'go', n: 'QUAY' }, { t: 'waitFor', fn: () => barge.state === 'docked' }, { t: 'go', n: 'PONT' }, { t: 'board' });
+    return;
+  }
+  const night = tod >= a.bedAt % 1440 || tod < 4 * 60;
+  if (night && !a.leaving) {
+    const wake = a.booked ? a.leaveAt : dayStart(1) + 6 * 60 + rnd(0, 60);
+    if (a.bedRoom) {
+      const b = a.bed || freeBed(a.bedRoom);
+      if (b) { b.occ = a; a.bed = b; const door = a.bedRoom === 'P17M' ? 'P17_M' : 'P17_W';
+        a.tasks.push({ t: 'status', v: 'Nachtruhe' }, { t: 'go', n: door }, { t: 'spot', p: [b.x, b.y] }, { t: 'pose', v: 'lie' }, { t: 'until', at: wake }, { t: 'pose', v: 'stand' }, { t: 'do', fn: x => { if (x.bed) { x.bed.occ = null; x.bed = null; } } });
+        return; }
+    }
+    a.tasks.push({ t: 'status', v: 'Nachtruhe im ' + (BMAP[a.home]?.name || 'Pavillon') }, { t: 'go', n: BMAP[a.home]?.door || 'P18_D' }, { t: 'hide' }, { t: 'until', at: wake }, { t: 'show' });
+    return;
+  }
+  if (tod >= 17 * 60 + 45 && tod < 19 * 60 + 15 && !a.ate) {
+    a.ate = true; const room = a.rel === 'j' ? 'SPJ' : 'SPC'; const s = freeSeat(room);
+    if (s) { s.occ = a; a.seat = s;
+      a.tasks.push({ t: 'status', v: room === 'SPJ' ? 'Abendessen (koschere Küche)' : 'Abendessen' }, { t: 'room', r: room, p: [s.x, s.y] }, { t: 'pose', v: 'sit' }, { t: 'wait', dur: rnd(18, 30) }, { t: 'pose', v: 'stand' }, { t: 'do', fn: x => { if (x.seat) { x.seat.occ = null; x.seat = null; } } });
+      return; }
+  }
+  const r = Math.random(), kids = a.group && a.group.some(m => m.age < 12);
+  const cap = Math.max(3, Math.min(25, nextBoundary(now) - now));
+  if (r < 0.26 || (kids && r < 0.42)) a.tasks.push({ t: 'status', v: kids ? 'mit den Kindern auf der Wiese' : 'wartet auf der Wiese' }, { t: 'room', r: 'LAWN' }, { t: 'wait', dur: Math.min(cap, rnd(6, 18)) });
+  else if (r < 0.48 && a.bedRoom) { const door = a.bedRoom === 'P17M' ? 'P17_M' : 'P17_W', R = a.bedRoom === 'P17M' ? [69.5, 70.1, 24.8, 27.6] : [69.5, 70.1, 21.2, 24];
+    a.tasks.push({ t: 'status', v: 'sitzt im Schlafsaal' }, { t: 'go', n: door }, { t: 'spot', p: [rnd(R[0], R[1]), rnd(R[2], R[3])] }, { t: 'pose', v: 'sit' }, { t: 'wait', dur: Math.min(cap, rnd(8, 20)) }, { t: 'pose', v: 'stand' }); }
+  else if (r < 0.48 && a.home && BMAP[a.home]?.door) a.tasks.push({ t: 'status', v: 'im Pavillon' }, { t: 'go', n: BMAP[a.home].door }, { t: 'hide' }, { t: 'wait', dur: Math.min(cap, rnd(8, 22)) }, { t: 'show' });
+  else if (r < 0.56) { const d = a.rel === 'j' ? 'SYN_D' : 'CH_D'; a.tasks.push({ t: 'status', v: a.rel === 'j' ? 'in der Synagoge' : 'in der Kirche' }, { t: 'go', n: d }, { t: 'hide' }, { t: 'wait', dur: Math.min(cap, rnd(8, 16)) }, { t: 'show' }); }
+  else { const n = pick(IDLE_NODES()); const [nx, ny] = NODES[n]; a.tasks.push({ t: 'status', v: 'wartet' }, { t: 'go', n }, { t: 'spot', p: [nx + rnd(-0.6, 0.6), ny + rnd(-0.35, 0.35)] }, { t: 'wait', dur: Math.min(cap, rnd(4, 12)) }); }
+}
+function dayStart(d) { return (phase === 'epilogue' ? 21 : 0) * 1440 + d * 1440; }
+function nextBoundary(now) { const tod = now % 1440, base = now - tod; for (const b of [17 * 60 + 45, 21 * 60, 28 * 60]) if (base + b > now) return base + b; return now + 60; }
+
+const PAVS = BLD.filter(b => /^P\d+$/.test(b.id) && b.id !== 'P17' && b.door).map(b => b.id);
+function makeResident(x, y, opts = {}) {
+  const L = emigrantGroup(x, y, opts);
+  L.home = opts.home || pick(PAVS);
+  if (opts.bedRoom) { L.bedRoom = opts.bedRoom; const b = freeBed(opts.bedRoom); if (b) { b.occ = L; L.bed = b; } }
+  L.booked = opts.booked ?? Math.random() < 0.7;
+  L.leaveAt = (opts.leaveBase ?? dayStart(1) + 4 * 60 + 20) + rnd(0, 40);
+  L.bedAt = (opts.bedBase ?? 21 * 60) + rnd(0, 55);
+  L.plan = planResident; L.clean = true; L.group.forEach(m => m.clean = true);
+  return L;
+}
+function spawnAmbient(epi = false) {
+  const spots = IDLE_NODES();
+  for (let i = 0; i < 26; i++) { const n = pick(spots); const [x, y] = NODES[n]; const L = makeResident(x + rnd(-0.5, 0.5), y + rnd(-0.3, 0.3), epi ? { booked: false } : {}); L.node = n; }
+  for (let i = 0; i < (epi ? 6 : 7); i++) { const [x, y] = NODES[pick(['M67', 'M77', 'M58'])]; const L = makeResident(x + rnd(-.5, .5), y + rnd(-.3, .3), { kind: 'single', sex: 'm', home: 'P17', bedRoom: 'P17M', booked: epi ? false : undefined }); L.node = nearestNode(L.x, L.y); }
+  for (let i = 0; i < 5; i++) { const [x, y] = NODES[pick(['M67', 'M58'])]; const L = makeResident(x + rnd(-.5, .5), y + rnd(-.3, .3), { kind: 'single', sex: 'f', home: 'P17', bedRoom: 'P17W', booked: epi ? false : undefined }); L.node = nearestNode(L.x, L.y); }
+  const cap = { coat: '#262320', hat: 'cap' };
+  [40.8, 43.2, 45.4].forEach((x, i) => staff(Object.assign({ name: ['Schreiber Voß', 'Schreiber Lüders', 'Schreiber Kröger'][i], x, y: 1.95, pose: 'sit', status: 'Registrierung: Papiere und Schiffskarten' }, cap)));
+  staff({ name: 'Dr. Hartwig', x: 48.2, y: 2.25, coat: '#f2eee4', role: 'doc', status: 'Hallenarzt · erste Gesundheitskontrolle' });
+  staff({ name: 'Dr. Petersen', x: 49.6, y: 2.9, coat: '#f2eee4', role: 'doc', status: 'Hallenarzt · erste Gesundheitskontrolle' });
+  staff({ name: 'Bademeister', x: 51.4, y: 14.3, coat: '#5a6470', hat: 'cap', status: 'Bad der Männer' });
+  staff({ name: 'Badefrau', x: 41.4, y: 14.3, coat: '#5a6470', sex: 'f', hat: 'scarf', scarf: '#d9d2c2', status: 'Bad der Frauen' });
+  staff({ name: 'Desinfektor', x: 46.4, y: 14.3, coat: '#5a6470', hat: 'cap', status: 'Desinfektionsapparat im Maschinenhaus' });
+  for (const [x, y, s] of [[51.9, 19, 'Kontrollkarten · Ausgang Männerbad'], [41.9, 19, 'Kontrollkarten · Ausgang Frauenbad'], [38.8, -0.1, 'Tor zum Anleger'], [46.6, 0.9, 'Eingang Empfangsgebäude']])
+    staff({ name: 'Schutzmann', x, y, coat: '#2e3a4c', hat: 'helmet', role: 'police', status: s });
+  staff({ name: 'Wärterin', x: SPOTS.nurse[0], y: SPOTS.nurse[1], coat: '#dcd6c8', hat: 'scarf', scarf: '#f2eee4', sex: 'f', status: 'Beobachtungsstation C' });
+  staff({ name: 'Koch', x: 65, y: 13.4, coat: '#efeae0', hat: 'cap', status: 'koschere Küche' });
+  staff({ name: 'Köchin', x: 57, y: 3.6, coat: '#efeae0', sex: 'f', hat: 'scarf', scarf: '#efeae0', status: 'Küche' });
+  for (let i = 0; i < (epi ? 1 : 2); i++) { const b = freeBed('COBS'); const p = mkAgent({ x: b.x, y: b.y, name: pick(['Jonas Petrauskas', 'Feige Segal', 'Mihály Tóth']), status: 'unter Beobachtung (Favusverdacht)', pose: 'lie', age: ri(18, 40), sex: i ? 'f' : 'm' }); b.occ = p; p.bed = b; }
+  for (let i = 0; i < 5; i++) { const b = BEDS.filter(x => (x.room === 'AP1' || x.room === 'AP3') && !x.occ)[ri(0, 8)]; if (!b) continue; const p = mkAgent({ x: b.x, y: b.y, name: pick(['Ignacy Wróbel', 'Ester Kaplan', 'Pál Nagy', 'Wasyl Melnyk', 'Rifka Goldberg']), status: 'wartet in der unreinen Abteilung auf Bad und Untersuchung', pose: i % 2 ? 'lie' : 'sit', age: ri(18, 50), sex: i % 2 ? 'f' : 'm' }); b.occ = p; p.bed = b; }
+  for (let i = 0; i < 3; i++) porter(i);
+  const cl = mkAgent({ role: 'staff', name: 'Bote der Verwaltung', x: 36.4, y: 6, coat: '#262320', hat: 'cap', status: 'trägt Listen zwischen Verwaltung und Empfangsgebäude' });
+  cl.plan = a => a.tasks.push({ t: 'go', n: 'REG' }, { t: 'wait', dur: rnd(4, 8) }, { t: 'go', n: 'VER_D' }, { t: 'hide' }, { t: 'wait', dur: rnd(10, 25) }, { t: 'show' });
+  const w = mkAgent({ role: 'staff', name: 'Nachtwächter', x: 57.9, y: 18.6, coat: '#2e3a4c', hat: 'cap', status: 'Rundgang', lantern: true, clean: true });
+  w.plan = a => { const tod = clock % 1440; if (tod > 20 * 60 || tod < 6 * 60) a.tasks.push({ go: 1, t: 'go', n: pick(['M38', 'M58', 'M77', 'LAWN', 'O2', 'O6', 'TUN_S', 'S29', 'E_MID_1']) }, { t: 'wait', dur: 2 }); else a.tasks.push({ t: 'go', n: 'VER_D' }, { t: 'hide' }, { t: 'wait', dur: 30 }, { t: 'show' }); };
+}
+function porter(i) {
+  const a = mkAgent({ role: 'porter', name: 'Gepäckträger', x: 52.5 + i * 0.4, y: -3.0, coat: '#34506a', hat: 'cap', status: 'Gepäckdienst', cart: false });
+  a.tasks.push({ t: 'wait', dur: i * 9 });
+  a.plan = p => p.tasks.push(
+    { t: 'do', fn: x => x.clean = false }, { t: 'status', v: 'holt Gepäck vom Bahnsteig' }, { t: 'go', n: 'PLAT_E' }, { t: 'spot', p: [rnd(46, 53.5), -3.0] }, { t: 'wait', dur: 3 }, { t: 'do', fn: x => x.cart = true },
+    { t: 'status', v: 'bringt Gepäck zur Annahme' }, { t: 'room', r: 'LUG' }, { t: 'wait', dur: 3 },
+    { t: 'status', v: 'Gepäck in die Dampfdesinfektion' }, { t: 'room', r: 'DIS' }, { t: 'wait', dur: 6 },
+    { t: 'status', v: 'desinfiziertes Gepäck in die Pavillons' }, { t: 'go', n: 'KP_D' }, { t: 'do', fn: x => x.clean = true }, { t: 'go', n: pick(['M58', 'M38', 'M67']) }, { t: 'wait', dur: 3 }, { t: 'do', fn: x => x.cart = false },
+    { t: 'status', v: 'zurück zum Bahnsteig' }, { t: 'go', n: 'R_G' });
+}
+function processTasks(sex) {
+  const bath = sex === 'm' ? 'BATH_M' : 'BATH_F', out = sex === 'm' ? 'KP_M' : 'KP_F';
+  return [
+    { t: 'status', v: 'Ankunft mit dem Sonderzug' },
+    { t: 'room', r: 'REG' }, { t: 'status', v: 'Registrierung: Papiere und Schiffskarte' }, { t: 'wait', dur: rnd(6, 12) }, { t: 'do', fn: a => { a.hadBundle = a.bundle; a.bundle = false; } },
+    { t: 'room', r: 'EXAM' }, { t: 'status', v: 'Erste Gesundheitskontrolle (Augen, Kopfhaut)' }, { t: 'wait', dur: rnd(2, 5) },
+    { t: 'room', r: bath }, { t: 'status', v: 'Bad – Kleider und Gepäck in der Dampfdesinfektion' }, { t: 'wait', dur: rnd(7, 11) },
+    { t: 'go', n: out }, { t: 'status', v: 'Kontrollkarte gestempelt – auf der reinen Seite' }, { t: 'do', fn: a => { a.bundle = a.hadBundle; a.clean = true; (a.group || []).forEach(m => m.clean = true); } }
+  ];
+}
+function arrivalGroup(x, y, opts = {}) {
+  const L = emigrantGroup(x, y, opts);
+  L.home = pick(PAVS); L.booked = opts.booked ?? Math.random() < 0.45; L.leaveAt = dayStart(1) + 4 * 60 + 20 + rnd(0, 40); L.bedAt = 21 * 60 + rnd(0, 55);
+  L.group.forEach(m => { m.bundle = true; });
+  L.tasks.push(...processTasks(L.sex));
+  L.plan = planResident; L.node = 'PLAT';
+  return L;
+}
+function trainArrive(at, n, label, cb) {
+  EVENTS.push({ at: at - 12, fn: () => { train.x = -32; train.state = 'in'; train.target = TRAIN_STOP; train.label = label;
+    train.cb = () => { log(`Sonderzug ${label} am Bahnsteig. ${n ? n + ' Menschen steigen aus.' : ''}`); unloadTrain(n); cb && cb(); }; } });
+}
+function unloadTrain(n) {
+  let c = 0; while (c < n) { const L = arrivalGroup(rnd(44.5, 53.5), -3.0); c += L.group.length; L.tasks.unshift({ t: 'wait', dur: rnd(0, 6) }); }
+  EVENTS.push({ at: clock + 18, fn: () => { train.state = 'out'; } });
+}
+function requestTrainEast() { if (train.state === 'away' && !CASE.trainCalled) { CASE.trainCalled = true; train.x = -32; train.state = 'in'; train.target = TRAIN_STOP; train.label = 'nach Osten'; train.cb = () => { CASE.trainReady = true; }; } }
+
+/* ---------------------------------------------------------------------
+   THE CASE: Familie Lewin
+   --------------------------------------------------------------------- */
+const CASE_BASE = { nat: 'ju', rel: 'j', from: 'Kowno (Russisches Reich)', dest: 'Chicago, Ill.', surname: 'Lewin', case: true, bundle: true };
+function lewin(who, x, y, extra = {}) {
+  const def = { M: { name: 'Mendel Lewin', sex: 'm', age: 41, coat: '#2f2b28', hat: 'hat', who: 'Vater, Schneider', off: [0, 0] },
+    C: { name: 'Chana Lewin', sex: 'f', age: 36, coat: '#5a3a38', scarf: '#8b6a36', who: 'Mutter', off: [0.28, 0.22] },
+    D: { name: 'Dawid Lewin', sex: 'm', age: 12, coat: '#4a5764', hat: 'cap', who: 'Sohn', off: [-0.25, 0.3] },
+    R: { name: 'Rywka Lewin', sex: 'f', age: 7, coat: '#7a5634', scarf: '#b89c68', who: 'Tochter', bundle: false, off: [0.1, -0.3] } }[who];
+  return mkAgent(Object.assign({}, CASE_BASE, def, { x, y }, extra));
+}
+function spawnCaseFamily() {
+  const M = lewin('M', 46.4, -3.0), Ch = lewin('C', 46.8, -2.9), D = lewin('D', 46.2, -2.8), R = lewin('R', 47, -3.1);
+  CASE.fam = { M, Ch, D, R }; const fam = [M, Ch, D, R];
+  fam.forEach(a => { a.node = 'PLAT'; a.status = 'Ankunft mit dem Sonderzug aus Ruhleben'; });
+  famStep(fam, 'REG', 10, 'Registrierung: Papiere und Schiffskarte', i => [40.6 + i * 0.6, 3.6]);
+  fam.forEach(a => a.tasks.push({ t: 'do', fn: x => { x.hadBundle = x.bundle; x.bundle = false; } }));
+  famStep(fam, 'EXAM', 5, 'Erste Gesundheitskontrolle', i => [[47.3, 3.4], [47.9, 3.8], [47.5, 4.2], [48.6, 3.7]][i]);
+  fam.forEach(a => a.tasks.push({ t: 'sync', id: 'susp', n: 4 }, { t: 'do', fn: x => { if (x === M) caseSuspicion(); } }));
+}
+let syncN = 0;
+function famStep(members, room, dur, status, spot) {
+  const id = 'f' + (syncN++);
+  members.forEach((m, i) => m.tasks.push({ t: 'room', r: room, p: spot(i) }, { t: 'sync', id, n: members.length }, { t: 'status', v: status }, { t: 'wait', dur }));
+}
+function sitOnBed(a, room, status) { const b = freeBed(room); if (!b) return []; b.occ = a; a.bed = b; return [{ t: 'room', r: room, p: [b.x, b.y] }, { t: 'pose', v: 'sit' }, { t: 'status', v: status }]; }
+function releaseBed(a) { if (a.bed) { a.bed.occ = null; a.bed = null; } }
+function caseSuspicion() {
+  const { M, Ch, D, R } = CASE.fam;
+  D.tasks.push({ t: 'spot', p: [48.7, 2.8] }, { t: 'status', v: 'wird zurückgehalten – Verdacht auf Trachom' }, { t: 'wait', dur: 5 }, ...sitOnBed(D, 'WAIT', 'wartet in Pavillon 2 – Befund unklar'));
+  [M, Ch, R].forEach(a => a.tasks.push(...sitOnBed(a, 'WAIT', 'wartet mit Dawid in Pavillon 2 – Befund unklar')));
+  CASE.state = 'pending'; CASE.at = clock;
+  log('Dr. Hartwig hält Dawid Lewin (12) zurück: Bindehaut gerötet, Trachom nicht auszuschließen.', 'case imp');
+  log('Die Familie wartet in Pavillon 2 der unreinen Seite. Die Entscheidung liegt bei der Hallenleitung.', 'case');
+  setTimeout(() => openCaseCard(), 900);
+}
+function orderSecondOpinion() {
+  if (CASE.second) return; CASE.second = 'asked';
+  log('Oberarzt Dr. Stamm wird aus der Verwaltung gerufen.', 'case');
+  const doc = mkAgent({ role: 'doc', name: 'Oberarzt Dr. Stamm', x: 36.4, y: 6, coat: '#f2eee4', hat: 'hat', status: 'Nachuntersuchung Dawid Lewin', speed: 1.9 });
+  doc.node = 'VER_D';
+  const D = CASE.fam.D;
+  doc.tasks.push({ t: 'go', n: 'WAIT' }, { t: 'spot', p: [D.bed ? D.bed.x + 0.5 : 45, D.bed ? D.bed.y : 9] }, { t: 'wait', dur: 22 }, { t: 'do', fn: () => {
+    const signal = Math.random() < 0.7 ? CASE.truth : !CASE.truth; CASE.second = signal ? 'pos' : 'neg';
+    log(signal ? 'Dr. Stamm: „Die Körnchen sind da. Beweisen kann ich es heute nicht."' : 'Dr. Stamm: „Die Rötung geht zurück. Garantieren kann ich nichts."', 'case imp');
+    if (CASE.state === 'pending') openCaseCard();
+  } }, { t: 'go', n: 'VER_D' }, { t: 'vanish' });
+  closeModal();
+}
+function bathAndOut(a, bathForMale) { const m = bathForMale ?? (a.sex === 'm' && (a.age > 11 || a === CASE.fam.D));
+  return [{ t: 'status', v: m ? 'Bad der Männer' : 'Bad der Frauen' }, { t: 'room', r: m ? 'BATH_M' : 'BATH_F' }, { t: 'wait', dur: 10 },
+    { t: 'go', n: m ? 'KP_M' : 'KP_F' }, { t: 'do', fn: x => { x.clean = true; x.bundle = x.hadBundle ?? x.bundle; } }]; }
+function decide(kind) {
+  if (CASE.state !== 'pending') return;
+  CASE.state = 'decided'; CASE.decision = kind; closeModal();
+  const { M, Ch, D, R } = CASE.fam; const fam = [M, Ch, D, R];
+  fam.forEach(a => { a.tasks.length = 0; a.path.length = 0; a.pose = 'stand'; releaseBed(a); });
+  const late = clock % 1440 >= 4 * 60 + 30 && clock % 1440 < 12 * 60;
+  const eveningMeal = (clock % 1440) < 19 * 60;
+  const wakeAt = dayStart(1) + 4 * 60 + 5;
+  const escort = mkAgent({ role: 'staff', name: 'Wärter', x: 48.5, y: 9, coat: '#dcd6c8', hat: 'cap', status: 'bringt Kranke in die Beobachtungsstation' }); escort.node = 'HOF1';
+  const toP17 = (a, room) => { const b = freeBed(room); b.occ = a; a.bed = b; a.home = 'P17'; return b; };
+  const quay = () => [{ t: 'status', v: 'geht zur Einschiffung' }, { t: 'go', n: 'QUAY' }, { t: 'waitFor', fn: () => barge.state === 'docked' }, { t: 'go', n: 'PONT' }, { t: 'board' }];
+  const meet = (list, id) => list.forEach((a, i) => a.tasks.push({ t: 'go', n: 'KP_D' }, { t: 'spot', p: [SPOTS.meetB[0] + i * 0.35 - 0.5, SPOTS.meetB[1]] }, { t: 'sync', id, n: list.length }, { t: 'status', v: 'wieder zusammen – auf der reinen Seite' }, { t: 'wait', dur: 2 }));
+  const evening = (a, b, door, i) => { if (late) return;
+    if (eveningMeal) a.tasks.push({ t: 'room', r: 'SPJ', p: [64.9 + i * 0.55, 13.68] }, { t: 'pose', v: 'sit' }, { t: 'status', v: 'Abendessen (koschere Küche)' }, { t: 'wait', dur: 20 }, { t: 'pose', v: 'stand' });
+    a.tasks.push({ t: 'go', n: door }, { t: 'spot', p: [b.x, b.y] }, { t: 'pose', v: 'lie' }, { t: 'status', v: 'Nachtruhe – getrennte Säle' }, { t: 'until', at: wakeAt + i * 0.5 }, { t: 'pose', v: 'stand' }, { t: 'do', fn: x => releaseBed(x) }); };
+  if (kind === 'sep') {
+    log('Entscheidung: Dawid kommt in die Beobachtungsstation C. Die Eltern und Rywka reisen wie gebucht.', 'case imp');
+    escort.tasks.push({ t: 'go', n: 'WAIT' }, { t: 'sync', id: 'o1', n: 2 }, { t: 'go', n: 'C_YARD' }, { t: 'spot', p: [SPOTS.nurse[0] + 0.6, SPOTS.nurse[1]] }, { t: 'status', v: 'Beobachtungsstation C' });
+    const b = freeBed('COBS'); b.occ = D; D.bed = b;
+    D.tasks.push({ t: 'status', v: 'wird über die Wilhelmsburger Straße in die Beobachtungsstation gebracht' }, { t: 'wait', dur: 3 }, { t: 'sync', id: 'o1', n: 2 }, { t: 'go', n: 'C_YARD' }, { t: 'room', r: 'COBS', p: [b.x, b.y] }, { t: 'pose', v: 'sit' }, { t: 'status', v: 'allein in der Beobachtungsstation' },
+      { t: 'until', at: dayStart(1) + 60 }, { t: 'pose', v: 'lie' }, { t: 'until', at: wakeAt + 10 }, { t: 'pose', v: 'stand' },
+      { t: 'status', v: 'steht am Zaun und schaut über die Straße' }, { t: 'go', n: 'D_SPOT' }, { t: 'spot', p: SPOTS.dawidFence });
+    const trio = [M, Ch, R]; trio.forEach(a => a.tasks.push({ t: 'wait', dur: 6 }, { t: 'status', v: 'geht ohne Dawid ins Bad' }, ...bathAndOut(a))); meet(trio, 'm1');
+    [[M, 'P17M', 'P17_M'], [Ch, 'P17W', 'P17_W'], [R, 'P17W', 'P17_W']].forEach(([a, room, door], i) => { const bd = toP17(a, room); evening(a, bd, door, i);
+      a.tasks.push({ t: 'status', v: 'geht zum Zaun an der Wilhelmsburger Straße' }, { t: 'go', n: 'LOOK' }, { t: 'spot', p: [SPOTS.lookC[0] - i * 0.3, SPOTS.lookC[1] + i * 0.25] }, { t: 'sync', id: 'look', n: 3 }, { t: 'status', v: 'sieht Dawid über die Straße hinweg' }, { t: 'wait', dur: 5 }, ...quay()); });
+  } else if (kind === 'hold') {
+    log('Entscheidung: Die ganze Familie kommt in die Beobachtungsstation C. Vier Plätze auf der PENNSYLVANIA bleiben leer.', 'case imp');
+    escort.tasks.push({ t: 'go', n: 'WAIT' }, { t: 'sync', id: 'o1', n: 5 }, { t: 'go', n: 'C_YARD' }, { t: 'spot', p: [SPOTS.nurse[0] + 0.6, SPOTS.nurse[1]] });
+    fam.forEach(a => { const b = freeBed('CFAM'); b.occ = a; a.bed = b;
+      a.tasks.push({ t: 'status', v: 'wird in die Beobachtungsstation gebracht' }, { t: 'wait', dur: 3 }, { t: 'sync', id: 'o1', n: 5 }, { t: 'go', n: 'C_YARD' }, { t: 'room', r: 'CFAM', p: [b.x, b.y] }, { t: 'pose', v: 'sit' }, { t: 'status', v: 'Isolierzimmer – wartet auf den Befund' },
+        { t: 'until', at: dayStart(1) + 30 }, { t: 'pose', v: 'lie' }, { t: 'until', at: wakeAt + 60 }, { t: 'pose', v: a === M ? 'stand' : 'sit' });
+      if (a === M) a.tasks.push({ t: 'status', v: 'steht im Hof und sieht den anderen beim Aufbruch zu' }, { t: 'go', n: 'C_YARD' }, { t: 'spot', p: SPOTS.mendelYard }); });
+  } else {
+    log('Entscheidung: Dawid wird durchgelassen. Die Familie reist gemeinsam.', 'case imp');
+    escort.tasks.push({ t: 'vanish' });
+    fam.forEach(a => a.tasks.push({ t: 'wait', dur: 2 }, { t: 'status', v: 'Kontrollkarte gestempelt' }, ...bathAndOut(a, a === M || a === D))); meet(fam, 'm1');
+    [[M, 'P17M', 'P17_M'], [Ch, 'P17W', 'P17_W'], [D, 'P17W', 'P17_W'], [R, 'P17W', 'P17_W']].forEach(([a, room, door], i) => { const bd = toP17(a, room); evening(a, bd, door, i);
+      if (!late) a.tasks.push({ t: 'go', n: 'P17_WS' }, { t: 'spot', p: [69.2 + i * 0.35, 19.3] }, { t: 'sync', id: 'meet', n: 4 }); a.tasks.push(...quay()); });
+  }
+}
+function autoDecide() {
+  if (CASE.state !== 'pending') return;
+  log('Ohne Weisung der Hallenleitung behält der Arzt die Familie zurück.', 'case imp');
+  decide('hold');
+}
+
+/* ---------------------------------------------------------------------
+   EPILOGUE – twenty days later
+   --------------------------------------------------------------------- */
+function startEpilogue() {
+  closeModal(); phase = 'epilogue';
+  agents = []; BEDS.forEach(b => b.occ = null); SEATS.forEach(s => s.occ = null); CASE.sync = {}; CASE.trainCalled = false; CASE.trainReady = false;
+  clock = 21 * 1440 + 9 * 60 + 20; barge.state = 'docked'; barge.x = BARGE_DOCK; barge.count = 0; train.state = 'away'; train.x = -32;
+  EVENTS.length = 0;
+  log('Zwanzig Tage später. Donnerstag, 3. Oktober 1907.', 'imp');
+  spawnAmbient(true);
+  const { decision: d, truth: t } = CASE;
+  const done = () => { CASE.outcomeDone = true; EVENTS.push({ at: clock + 25, fn: showEnd }); };
+  const quayBoard = [{ t: 'go', n: 'QUAY' }, { t: 'waitFor', fn: () => barge.state === 'docked' }, { t: 'go', n: 'PONT' }, { t: 'board' }];
+  const east = [{ t: 'go', n: 'PLAT' }, { t: 'do', fn: requestTrainEast }, { t: 'waitFor', fn: () => CASE.trainReady }, { t: 'spot', p: [rnd(46, 52), -3.4] }, { t: 'status', v: 'steigt in den Zug nach Osten' }, { t: 'train' }];
+  const trainLeave = list => EVENTS.push({ at: 0, repeat: true, fn: () => { if (list.every(a => a.dead)) { train.state = 'out'; done(); return true; } } });
+  const bargeLeave = list => EVENTS.push({ at: 0, repeat: true, fn: () => { if (list.every(a => a.dead)) { barge.state = 'leaving'; done(); return true; } } });
+  const inBed = (a, room, i, status) => { const bb = BEDS.filter(x => x.room === room)[i]; a.x = bb.x; a.y = bb.y; bb.occ = a; a.bed = bb; a.node = ROOMS[room].node; a.pose = 'sit'; a.bundle = false; a.status = status; };
+  if (d === 'sep') {
+    const D = lewin('D', 0, 0); inBed(D, 'COBS', 0, 'seit 20 Tagen in der Beobachtungsstation');
+    if (!t) {
+      EVENTS.push({ at: clock + 6, fn: () => log('Befund Dawid Lewin: Follikularkatarrh, kein Trachom. Reisefähig.', 'case imp') });
+      const st = mkAgent({ role: 'staff', name: 'Stewardess der Linie', sex: 'f', age: 30, x: 36.4, y: 6, coat: '#23303f', hat: 'scarf', scarf: '#f2eee4', status: 'holt Dawid in der Beobachtungsstation ab', speed: 1.9 }); st.node = 'VER_D';
+      st.tasks.push({ t: 'go', n: 'C_YARD' }, { t: 'sync', id: 'e1', n: 2 }, { t: 'wait', dur: 3 }, { t: 'status', v: 'begleitet Dawid an Bord' }, ...quayBoard);
+      D.tasks.push({ t: 'wait', dur: 10 }, { t: 'pose', v: 'stand' }, { t: 'do', fn: x => { releaseBed(x); x.bundle = true; } }, { t: 'go', n: 'C_YARD' }, { t: 'sync', id: 'e1', n: 2 }, { t: 'status', v: 'reist allein nach Amerika, mit dem Dampfer GRAF WALDERSEE' }, { t: 'wait', dur: 3.3 }, ...quayBoard);
+      bargeLeave([D, st]);
+    } else {
+      EVENTS.push({ at: clock + 6, fn: () => log('Befund bestätigt: Trachom. Dawid Lewin wird zurückbefördert.', 'case imp') });
+      const po = mkAgent({ role: 'police', name: 'Schutzmann', x: 38.8, y: -0.1, coat: '#2e3a4c', hat: 'helmet', status: 'begleitet Dawid zur Bahn', speed: 1.9 }); po.node = 'G_N';
+      po.tasks.push({ t: 'go', n: 'C_YARD' }, { t: 'sync', id: 'e1', n: 2 }, { t: 'wait', dur: 3 }, { t: 'go', n: 'PLAT' }, { t: 'waitFor', fn: () => D.dead }, { t: 'go', n: 'G_N' });
+      D.tasks.push({ t: 'wait', dur: 10 }, { t: 'pose', v: 'stand' }, { t: 'do', fn: x => { releaseBed(x); x.bundle = true; } }, { t: 'go', n: 'C_YARD' }, { t: 'sync', id: 'e1', n: 2 }, { t: 'status', v: 'wird allein zurück nach Russland geschickt' }, { t: 'wait', dur: 3.3 }, ...east);
+      trainLeave([D]);
+    }
+  } else if (d === 'hold') {
+    const fam = ['M', 'C', 'D', 'R'].map(w => lewin(w, 0, 0)); fam.forEach((a, i) => inBed(a, 'CFAM', i, 'seit 20 Tagen im Isolierzimmer'));
+    const out = t ? east : [{ t: 'status', v: 'reist 20 Tage später als geplant' }, ...quayBoard];
+    EVENTS.push({ at: clock + 6, fn: () => log(t ? 'Befund bestätigt: Trachom. Die Familie reist gemeinsam zurück nach Osten.' : 'Befund Dawid Lewin: kein Trachom. Die Familie darf reisen – mit dem Dampfer GRAF WALDERSEE.', 'case imp') });
+    fam.forEach(a => a.tasks.push({ t: 'wait', dur: 10 }, { t: 'pose', v: 'stand' }, { t: 'do', fn: x => { releaseBed(x); x.bundle = x.age > 10; } }, { t: 'go', n: 'C_YARD' }, { t: 'sync', id: 'e2', n: 4 }, { t: 'status', v: t ? 'muss zurück nach Kowno' : 'reist endlich' }, ...out));
+    if (t) trainLeave(fam); else bargeLeave(fam);
+  } else {
+    const boy = mkAgent({ role: 'staff', name: 'Telegrammbote', x: 31.5, y: -1.4, coat: '#34506a', hat: 'cap', status: 'bringt ein Telegramm', speed: 1.9 }); boy.node = 'R_Q';
+    boy.tasks.push({ t: 'wait', dur: 4 }, { t: 'go', n: 'VER_D' }, { t: 'hide' }, { t: 'do', fn: () => { showTelegram(); } }, { t: 'wait', dur: 10 }, { t: 'vanish' });
+    if (!t) {
+      EVENTS.push({ at: clock + 18, fn: () => { const f = emigrantGroup(67.4, 18.6, { kind: 'family', nat: 'pl' }); f.group.forEach(m => { m.follow = null; m.clean = true; const room = m.sex === 'm' && m.age > 13 ? 'P17M' : 'P17W'; const bb = freeBed(room); if (bb) { bb.occ = m; m.bed = bb; m.tasks.push({ t: 'go', n: room === 'P17M' ? 'P17_M' : 'P17_W' }, { t: 'spot', p: [bb.x, bb.y] }, { t: 'pose', v: 'sit' }, { t: 'status', v: 'neu angekommen – bezieht die Betten im Pavillon 17' }); } }); done(); } });
+    } else {
+      barge.state = 'away'; barge.x = -30; barge.count = 2;
+      EVENTS.push({ at: clock + 16, fn: () => { barge.state = 'arriving'; } });
+      EVENTS.push({ at: 0, repeat: true, fn: () => { if (barge.state === 'docked' && barge.count === 2) { barge.count = 0;
+        const Ch = lewin('C', 31.5, -6.6, { status: 'zurück aus New York' }), D = lewin('D', 31.8, -6.4, { status: 'in Ellis Island abgewiesen: Trachom' });
+        [Ch, D].forEach(a => { a.node = 'PONT'; a.tasks.push({ t: 'go', n: 'VER_D' }, { t: 'hide' }, { t: 'wait', dur: 8 }, { t: 'show' }, { t: 'status', v: 'Rückfahrt nach Osten – auf Kosten der Linie' }, ...east); });
+        trainLeave([Ch, D]); log('Der Tender bringt zwei Rückkehrer aus New York: Chana und Dawid Lewin.', 'case imp'); return true; } } });
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------
+   SCHEDULE (day 0 → morning day 1)
+   --------------------------------------------------------------------- */
+function setupDay() {
+  spawnAmbient(false);
+  for (let i = 0; i < 3; i++) { const L = arrivalGroup(46, -3); const room = L.sex === 'm' ? 'BATH_M' : 'BATH_F'; L.tasks.splice(0, L.tasks.findIndex(t => t.t === 'room' && t.r === room));
+    const R = ROOMS[room]; L.x = rnd(R.x + 0.4, R.x + R.w - 0.4); L.y = rnd(R.y + 0.4, R.y + R.d - 0.4); L.group.forEach(m => { m.x = L.x + rnd(-.3, .3); m.y = L.y + rnd(-.3, .3); m.bundle = false; m.hadBundle = true; }); L.node = R.node; }
+  trainArrive(15 * 60 + 20, 22, 'aus Ruhleben', () => spawnCaseFamily());
+  trainArrive(18 * 60 + 50, 30, 'aus Ruhleben');
+  trainArrive(21 * 60 + 40, 16, 'aus Myslowitz');
+  EVENTS.push({ at: 17 * 60 + 40, fn: () => log('Abendessen – getrennte Speisesäle für christliche und jüdische Auswanderer.') });
+  EVENTS.push({ at: 21 * 60, fn: () => log('Nachtruhe. Männer und Frauen schlafen in getrennten Sälen – auch Familien.') });
+  EVENTS.push({ at: 22 * 60, fn: () => { if (CASE.state === 'pending') { const { D, R } = CASE.fam; [D, R].forEach(a => { if (!a.path.length && !a.tasks.length) a.pose = 'lie'; }); log('In Pavillon 2 brennt noch Licht. Die Lewins warten weiter.', 'case'); } } });
+  EVENTS.push({ at: 28 * 60 + 30, fn: () => log('Wecken. Einschiffung für die PENNSYLVANIA ab 05:30.', 'imp') });
+  EVENTS.push({ at: 29 * 60 + 30, fn: autoDecide });
+  EVENTS.push({ at: 30 * 60 + 45, fn: () => { barge.state = 'leaving'; log(`Der Tender legt ab: ${barge.count} Menschen zur PENNSYLVANIA.`, 'imp'); } });
+  EVENTS.push({ at: 31 * 60 + 10, fn: shipGone });
+  log('Donnerstag, 12. September 1907. Die PENNSYLVANIA läuft morgen früh nach New York aus.', 'imp');
+}
+
+/* ---------------------------------------------------------------------
+   PEOPLE SPRITES – small bitmap figures, assembled from parts.
+   h hair/hat · k skin · c coat · C coat shade · s scarf · S scarf shade
+   g grey hair · l legs · y brass · w white · b bundle · B bundle shade
+   Sprites face right; mirrored when walking left.
+   --------------------------------------------------------------------- */
+const HEADS = {
+  hat: ['.hhh.', 'hhhhh', '.kkk.', '.kkk.'],
+  cap: ['.hhh.', '.hhhh', '.kkk.', '.kkk.'],
+  bare: ['.hhh.', '.hkk.', '.kkk.'],
+  grey: ['.ggg.', '.gkk.', '.kkk.'],
+  helmet: ['..y..', '.hhh.', 'hhhhh', '.kkk.'],
+  scarf: ['.sss.', 'sskk.', 'Sskk.'],
+  nurse: ['.www.', 'wwkk.', 'wwkk.'],
+  kidB: ['.hh.', '.kk.'], kidC: ['hhh.', '.kk.'], kidS: ['.ss.', 'skk.']
+};
+const BODY = {
+  m: { torso: ['ccccc', 'cccCC', 'ccccC', '.ccC.'], legs: [['.l.l.', '.l.l.'], ['.l.l.', 'l...l'], ['..l..', '.l.l.']], sit: ['cccll'] },
+  f: { torso: ['.ccc.', 'cccCC', 'ccccC', 'ccccC', 'cccCC', 'ccCCC'], legs: [['.l.l.'], ['l..l.'], ['.l..l']], sit: ['cccCl'] },
+  kid: { torso: ['cccc', 'cccC', '.cC.'], legs: [['.l.l'], ['l..l'], ['.ll.']], sit: ['ccl.'] },
+  kidf: { torso: ['cccc', 'cccC', 'ccCC'], legs: [['.l.l'], ['l..l'], ['.ll.']], sit: ['cCl.'] }
+};
+const LIE = {
+  iso: ['hh......', 'kkcc....', '.cccCc..', '...ccCCc', '.....cCC'],
+  isoKid: ['hh....', 'kkcc..', '..ccCc', '....cC'],
+  td: ['.........', 'hhccccccc', 'kkcccccCC', '.........'],
+  tdKid: ['......', 'hhcccc', 'kkccCC']
+};
+const HAIRS = ['#3a2a1e', '#5a3b22', '#2a211b', '#7a5a3a', '#4a3524'];
+function lookOf(a) {
+  if (a._look) return a._look;
+  const kid = a.age < 13, f = a.sex === 'f';
+  let head;
+  if (kid) head = f ? 'kidS' : (a.hat === 'cap' ? 'kidC' : 'kidB');
+  else if (a.hat === 'helmet') head = 'helmet';
+  else if (a.hat === 'hat') head = 'hat';
+  else if (a.hat === 'cap') head = 'cap';
+  else if (a.hat === 'scarf') head = (a.scarf === '#f2eee4' || a.scarf === '#efeae0') ? 'nurse' : 'scarf';
+  else if (a.hat === 'grey') head = 'grey';
+  else head = 'bare';
+  const hair = (head === 'hat' || head === 'cap' || head === 'helmet') ? '#262120' : HAIRS[a.id % HAIRS.length];
+  const coat = a.coat, sc = a.scarf || coat;
+  a._look = { head, body: kid ? (f ? 'kidf' : 'kid') : (f ? 'f' : 'm'), kid,
+    cols: { h: hair, k: a.skin, c: coat, C: shade(coat, 0.7), s: sc, S: shade(sc, 0.72), g: '#c9c3b5', l: '#2b2320', y: '#d9b25a', w: '#f2eee4', b: f ? '#8c7a5c' : '#6f5a3e', B: '#4f3f2a' } };
+  return a._look;
+}
+function personRows(L, pose, frame, bundle, view) {
+  if (pose === 'lie') { const t = view === 'td' ? (L.kid ? LIE.tdKid : LIE.td) : (L.kid ? LIE.isoKid : LIE.iso); return L.head === 'scarf' || L.head === 'kidS' ? t.map(r => r.replace(/h/g, 's')) : t; }
+  const B = BODY[L.body], head = HEADS[L.head];
+  let rows = head.concat(pose === 'sit' ? B.torso.slice(0, L.body === 'f' ? 3 : B.torso.length - 1).concat(B.sit) : B.torso.concat(B.legs[frame]));
+  const W = Math.max(...rows.map(r => r.length));
+  rows = rows.map(r => { const p = W - r.length; return '.'.repeat(Math.floor(p / 2)) + r + '.'.repeat(Math.ceil(p / 2)); });
+  if (bundle && !L.kid && pose !== 'sit') { const t0 = head.length; rows = rows.map((r, i) => (i >= t0 && i < t0 + 3 ? (i === t0 + 2 ? 'B' : 'b') : '.') + r); }
+  return rows;
+}
+function personSprite(a, pose, frame, flip, outline, view) {
+  const L = lookOf(a), key = pose + frame + (flip ? 'f' : '') + outline + VK + (a.bundle ? 'b' : '') + view;
+  a._spr = a._spr || {}; if (a._spr[key]) return a._spr[key];
+  const rows = personRows(L, pose, frame, a.bundle, view), w = Math.max(...rows.map(r => r.length)), h = rows.length;
+  const c = mk(w + 2, h + 2), g = c.getContext('2d'), cols = {};
+  for (const k in L.cols) cols[k] = vt(L.cols[k], VK);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const ch = rows[y][flip ? w - 1 - x : x]; if (ch && ch !== '.') { g.fillStyle = cols[ch] || '#f0f'; g.fillRect(x + 1, y + 1, 1, 1); } }
+  outlineC(c, outline);
+  if (Object.keys(a._spr).length > 40) a._spr = {};
+  return (a._spr[key] = c);
+}
+function outlineFor(a) {
+  if (selected && selected.a === a) return '#f0c850';
+  if (hovered && hovered.a === a) return '#f7e6a8';
+  if (a.case && CASE.state !== 'none') return vt('#7a1f16', VK);
+  return vt('#1d1a1f', VK);
+}
+function drawPerson(g, a, x, y, view) {
+  const flip = (view === 'td' ? a.dir[0] : a.dir[0] - a.dir[1]) < -0.05;
+  const frame = a.walking ? 1 + (Math.floor(a.phase / 1.6) % 2) : 0;
+  const c = personSprite(a, a.pose, frame, flip && a.pose !== 'lie', outlineFor(a), view);
+  if (a.pose === 'lie') { g.drawImage(c, Math.round(x - c.width / 2), Math.round(y - c.height / 2 - 1)); return c; }
+  // shadow
+  g.fillStyle = 'rgba(20,14,10,.28)'; g.fillRect(Math.round(x - 2), Math.round(y), 5, 1);
+  g.drawImage(c, Math.round(x - c.width / 2), Math.round(y - c.height + 1));
+  if (a.cart !== undefined) {
+    const cx = Math.round(x + (flip ? -8 : 4)), cy = Math.round(y - 4);
+    g.fillStyle = vt('#6d5334', VK); g.fillRect(cx, cy, 5, 3); g.fillStyle = vt('#4a3522', VK); g.fillRect(cx, cy + 2, 5, 1);
+    g.fillStyle = vt('#1d1a1f', VK); g.fillRect(cx, cy + 3, 1, 1); g.fillRect(cx + 4, cy + 3, 1, 1);
+    if (a.cart) { g.fillStyle = vt('#9a7b4f', VK); g.fillRect(cx, cy - 2, 3, 2); g.fillStyle = vt('#7b5d3a', VK); g.fillRect(cx + 2, cy - 1, 3, 1); }
+  }
+  if (a.lantern && nightK() > 0.2) { g.fillStyle = '#ffe08a'; g.fillRect(Math.round(x + (flip ? -3 : 3)), Math.round(y - 5), 1, 2); }
+  return c;
+}
+
+/* ---------------------------------------------------------------------
+   ISO VIEW – prerendered ground + sprites per palette (day/dusk/night)
+   --------------------------------------------------------------------- */
+const RQ = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+function circ(cx, cy, r, n = 20, z = 0) { const o = []; for (let i = 0; i < n; i++) { const t = i / n * Math.PI * 2; o.push([cx + Math.cos(t) * r, cy + Math.sin(t) * r, z]); } return o; }
+function boxO(x0, y0, x1, y1, z0, h, top, s, e, edge) {
+  const z1 = z0 + h;
+  fp([[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], s);
+  fp([[x1, y1, z0], [x1, y0, z0], [x1, y0, z1], [x1, y1, z1]], e);
+  fp([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], top);
+  if (edge) { wl([x0, y1, z0], [x1, y1, z0], edge); wl([x1, y1, z0], [x1, y0, z0], edge); wl([x1, y0, z0], [x1, y0, z1], edge); wl([x1, y0, z1], [x0, y0, z1], edge);
+    wl([x0, y0, z1], [x0, y1, z1], edge); wl([x0, y1, z1], [x0, y1, z0], edge); wl([x0, y1, z1], [x1, y1, z1], K.paperL); }
+}
+function furnIso(f) {
+  const [k, x0, y0, x1, y1, h] = f;
+  if (k === 'appar') { boxO(x0, y0, x1, y1, 0, h, K.metalL, K.metal, shade(K.metal, 0.8), K.ink);
+    for (let x = x0 + 0.5; x < x1; x += 0.8) wl([x, y1, 0.1], [x, y1, h - 0.05], K.ink); return; }
+  if (k === 'stove') return boxO(x0, y0, x1, y1, 0, h, K.roof3, K.ink2, K.ink, K.ink);
+  if (k === 'exam') return boxO(x0, y0, x1, y1, 0, h, K.white, K.whiteS, shade(K.whiteS, 0.85), K.ink2);
+  if (k === 'crate') return boxO(x0, y0, x1, y1, 0, h, K.wood1, K.wood2, K.wood3, K.ink);
+  boxO(x0, y0, x1, y1, 0, h, K.wood1, K.wood2, K.wood3, K.ink);
+}
+function isoLabel(g, s, x, y, col, halo, sc = 1) { const [a, b] = A(x, y); const w = textW(s) * sc; drawTextHalo(g, s, Math.round(a - w / 2), Math.round(b - 4 * sc), col, halo, sc); }
+function ell(cx, cy, rx, ry, n = 36) { const o = []; for (let i = 0; i < n; i++) { const t = i / n * Math.PI * 2; o.push([cx + Math.cos(t) * rx, cy + Math.sin(t) * ry]); } return o; }
+function offLine(line, off) { return line.map((p, i) => { const a = line[Math.max(0, i - 1)], b = line[Math.min(line.length - 1, i + 1)]; const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [p[0] - dy / L * off, p[1] + dx / L * off]; }); }
+function band(line, w) { return offLine(line, -w).concat(offLine(line, w).reverse()); }
+function alongLine(line, step, fn) { for (let i = 0; i < line.length - 1; i++) { const [ax, ay] = line[i], [bx, by] = line[i + 1], L = Math.hypot(bx - ax, by - ay); for (let u = 0; u < L; u += step) fn(ax + (bx - ax) * u / L, ay + (by - ay) * u / L, -(by - ay) / L, (bx - ax) / L); } }
+function groundCommon(poly, rect, line, label) {
+  // shared ground description for iso (poly/line = projected drawers)
+  poly(RQ(-200, -200, 300, WATER_Y), PT.water); poly(RQ(-200, WATER_Y, 300, -0.4), PT.stone);
+  for (const r of ROADS) poly(r.poly, PT.cobble);
+  poly(SITE_POLY, PT.gravel); poly(RQ(...A_ZONE), PT.gravelA); poly(RQ(...C_ZONE), PT.gravelC);
+  for (const l of LAWNS) poly(RQ(...l), PT.lawn);
+  poly(ell(OVAL.cx, OVAL.cy, OVAL.rx + 0.7, OVAL.ry + 0.7), PT.cobble); poly(ell(OVAL.cx, OVAL.cy, OVAL.rx - 0.5, OVAL.ry - 0.5), PT.lawn);
+  for (const [, y, x0, x1] of STREETS_H) if (y > -1) poly(RQ(x0 - 0.5, y - 0.5, x1 + 0.5, y + 0.5), PT.cobble);
+  for (const [, x, y0, y1] of STREETS_V) poly(RQ(x - 0.5, Math.max(-0.4, y0 - 0.5), x + 0.5, y1 + 0.5), PT.cobble);
+  poly(RQ(46.6, 5.2, 50.4, 13.6), PT.stone); poly(RQ(42, 5.2, 43.4, 13.6), PT.stone); poly(RQ(39.2, 12.8, 53.6, 13.6), PT.stone);
+  poly(RQ(76.2, 36.6, 77.4, 41.6), PT.cobble); poly(RQ(55, 42.2, 82, 43), PT.cobble); poly(band([[56, 42.8], [61, 43.4], [64.8, 45.6], [73.4, 48.4], [81.6, 50.8], [85.3, 50.2]], 0.45), PT.cobble);
+  poly(RQ(89.2, 53.4, 95.2, 54.6), PT.cobble);
+  // state railway with tunnel
+  poly(band(STAATSBAHN, 1.25), K.stone2); poly(RQ(TUNNEL[0] - 0.6, TUNNEL[1] - 1.3, TUNNEL[0] + 0.6, TUNNEL[1] + 1.3), K.ink2);
+  alongLine(STAATSBAHN, 0.42, (x, y, nx, ny) => { line([x - nx * 0.95, y - ny * 0.95], [x - nx * 0.15, y - ny * 0.15], K.wood2); line([x + nx * 0.15, y + ny * 0.15], [x + nx * 0.95, y + ny * 0.95], K.wood2); });
+  for (const o of [-0.8, -0.3, 0.3, 0.8]) { const l = offLine(STAATSBAHN, o); for (let i = 0; i < l.length - 1; i++) line(l[i], l[i + 1], K.rail); }
+  // siding, platform, quay
+  for (let x = -60; x < TRAIN_STOP + 0.4; x += 0.42) line([x, SIDING_Y - 0.35], [x, SIDING_Y + 0.3], K.wood2);
+  for (const ry of [SIDING_Y - 0.2, SIDING_Y + 0.2]) { line([-60, ry], [TRAIN_STOP + 0.4, ry], K.rail); line([-60, ry - 0.06], [TRAIN_STOP + 0.4, ry - 0.06], K.metalL); }
+  poly(RQ(...PLATFORM_R), PT.stone); line([PLATFORM_R[0], PLATFORM_R[3]], [PLATFORM_R[2], PLATFORM_R[3]], K.stone3);
+  line([-200, WATER_Y], [300, WATER_Y], K.stone3); line([-200, WATER_Y - 0.08], [300, WATER_Y - 0.08], K.water4);
+  poly(RQ(...PONTOON_R), PT.planks);
+  for (const [x, y] of PITS) { poly(circ(x, y, 0.5), K.stone3); poly(circ(x, y, 0.4), K.water4); poly(circ(x - 0.05, y - 0.05, 0.18), K.water2); }
+  // site enclosure along the plan outline
+  for (let i = 0; i < SITE_POLY.length; i++) { const a = SITE_POLY[i], b = SITE_POLY[(i + 1) % SITE_POLY.length]; if (Math.abs(a[1] - b[1]) < 0.01 && Math.abs(a[1] + 0.4) < 0.01) continue; line(a, b, K.brick3); line([a[0] + 0.08, a[1] + 0.08], [b[0] + 0.08, b[1] + 0.08], K.brick2); }
+}
+function renderGroundIso() {
+  const c = mk(GW, GH), g = c.getContext('2d'); D = { g, ox: 0, oy: 0 };
+  g.fillStyle = PT.meadow; g.fillRect(0, 0, GW, GH);
+  groundCommon((p, f) => fp(p, f), null, (a, b, col) => wl(a, b, col));
+  boxO(TRAIN_STOP + 0.2, SIDING_Y - 0.3, TRAIN_STOP + 0.5, SIDING_Y + 0.3, 0, 0.3, K.brick2, K.brick3, K.brick4, K.ink);
+  for (const b of BLD) if (b.cut) fp(RQ(b.x, b.y, b.x + b.w, b.y + b.d), b.zone === 'C' ? PT.stone : PT.floor);
+  for (const r of ['BATH_M', 'BATH_F', 'DIS']) { const R = ROOMS[r]; fp(RQ(R.x - 0.3, R.y - 0.3, R.x + R.w + 0.3, R.y + R.d + 0.3), PT.tiles); }
+  for (const [x, y] of SHOWERS) { const [a, b2] = Q(x, y, 0.7); px(a, b2, K.metal); px(a + 1, b2, K.metal); px(a, b2 + 1, K.ink2); }
+  for (const f of FURN) furnIso(f);
+  if (VK !== 'day') for (const [lx, ly] of LAMPS) { const [cx, cy] = A(lx, ly);
+    for (let yy = -11; yy <= 11; yy++) for (let xx = -22; xx <= 22; xx++) { const d = (xx / 22) ** 2 + (yy / 11) ** 2; if (d < 0.3 || (d < 1 && ((xx + yy) & 1) === 0)) px(cx + xx, cy + yy, d < 0.3 ? K.glow : K.pool); } }
+  const halo = K.paperL;
+  for (const [t, x, y, col, sc] of LABELS) isoLabel(g, t, x, y, K[col], col === 'water5' ? K.water2 : halo, sc);
+  for (const [k, R] of Object.entries(ROOMS)) if (R.label) isoLabel(g, R.label.toUpperCase(), R.x + R.w / 2, R.y + R.d - 0.35, K.ink2, halo);
+  for (let i = 0; i < 4; i++) fp(RQ(2 + i * 2.2, 33, 4.2 + i * 2.2, 33.3), i % 2 ? K.paperL : K.ink);
+  isoLabel(g, '0', 2, 34, K.ink, halo); isoLabel(g, '20', 6.4, 34, K.ink, halo); isoLabel(g, '40 M', 10.8, 34, K.ink, halo);
+  { const [ax, ay] = A(-3, 8), [bx, by] = A(-3, 5.2); lineP(ax, ay, bx, by, K.ink); lineP(ax + 1, ay, bx + 1, by, K.ink);
+    lineP(bx, by, bx - 5, by + 1, K.ink); lineP(bx, by, bx - 1, by + 5, K.ink); drawTextHalo(g, 'N', bx + 3, by - 9, K.ink, halo); }
+  return c;
+}
+/* windows & doors on faces */
+function winS(y, u, z0, z1, w = 0.14) { fp([[u - w, y, z0], [u + w, y, z0], [u + w, y, z1], [u - w, y, z1]], K.win); wl([u - w - 0.02, y, z0 - 0.04], [u + w + 0.02, y, z0 - 0.04], K.winF); }
+function winE(x, u, z0, z1, w = 0.14) { fp([[x, u + w, z0], [x, u - w, z0], [x, u - w, z1], [x, u + w, z1]], K.win); wl([x, u + w + 0.02, z0 - 0.04], [x, u - w - 0.02, z0 - 0.04], K.winF); }
+function chaletS(x0, x1, y, zp, h) {
+  fp([[x0, y, 0], [x1, y, 0], [x1, y, zp], [x0, y, zp]], PT.brickS); fp([[x0, y, zp], [x1, y, zp], [x1, y, h], [x0, y, h]], PT.plasS);
+  const n = Math.max(1, Math.round((x1 - x0) / 0.85));
+  for (let i = 0; i <= n; i++) { const u = x0 + (x1 - x0) * i / n; wl([u, y, zp], [u, y, h], K.wood3); if (i < n && i % 2 === 0) wl([u, y, zp], [x0 + (x1 - x0) * (i + 1) / n, y, zp + (h - zp) * 0.45], K.wood3); }
+  wl([x0, y, zp], [x1, y, zp], K.wood3); wl([x0, y, h], [x1, y, h], K.wood3);
+  for (let i = 0; i < n; i++) if (i % 2 === 1 || n < 3) winS(y, x0 + (x1 - x0) * (i + 0.5) / n, zp + (h - zp) * 0.3, zp + (h - zp) * 0.8);
+}
+function chaletE(x, y0, y1, zp, h) {
+  fp([[x, y1, 0], [x, y0, 0], [x, y0, zp], [x, y1, zp]], PT.brickE); fp([[x, y1, zp], [x, y0, zp], [x, y0, h], [x, y1, h]], PT.plasE);
+  const n = Math.max(1, Math.round((y1 - y0) / 0.85));
+  for (let i = 0; i <= n; i++) { const u = y0 + (y1 - y0) * i / n; wl([x, u, zp], [x, u, h], K.wood3); }
+  wl([x, y0, zp], [x, y1, zp], K.wood3); wl([x, y0, h], [x, y1, h], K.wood3);
+  for (let i = 0; i < n; i++) if (i % 2 === 1 || n < 3) winE(x, y0 + (y1 - y0) * (i + 0.5) / n, zp + (h - zp) * 0.3, zp + (h - zp) * 0.8);
+}
+function buildSolid(b) {
+  const x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.d, h = b.h, rh = b.rh || 0.8, o = 0.16, top = h + rh;
+  const tall = b.id === 'CH' ? 5 : top + 0.2;
+  return spriteFor([[x0 - o, y0 - o, 0], [x1 + o, y1 + o, 0], [x0 - o, y1 + o, 0], [x1 + o, y0 - o, 0], [x0 - o, y0 - o, tall], [x1 + o, y1 + o, tall], [x0 - o, y1 + o, tall], [x1 + o, y0 - o, tall]], () => {
+    if (b.mat === 'chalet') { chaletS(x0, x1, y1, 0.26, h); chaletE(x1, y0, y1, 0.26, h); }
+    else {
+      fp([[x0, y1, 0], [x1, y1, 0], [x1, y1, h], [x0, y1, h]], b.mat === 'brick' ? PT.brickS : PT.plasS);
+      fp([[x1, y1, 0], [x1, y0, 0], [x1, y0, h], [x1, y1, h]], b.mat === 'brick' ? PT.brickE : PT.plasE);
+      const storeys = h > 1.6 ? 2 : 1;
+      for (let s = 0; s < storeys; s++) { const z0 = h * (s / storeys) + h / storeys * 0.3, z1 = h * (s / storeys) + h / storeys * 0.75;
+        const nS = Math.floor(b.w / 0.9), nE = Math.floor(b.d / 0.9);
+        for (let i = 0; i < nS; i++) { const u = x0 + (i + 0.5) * b.w / nS; winS(y1, u, z0, z1); if (b.mat === 'brick') wl([u - 0.16, y1, z1 + 0.06], [u + 0.16, y1, z1 + 0.06], K.brickH); }
+        for (let i = 0; i < nE; i++) { const u = y0 + (i + 0.5) * b.d / nE; winE(x1, u, z0, z1); } }
+      if (b.mat === 'brick') { wl([x0, y1, h - 0.05], [x1, y1, h - 0.05], K.brickH); wl([x1, y1, h - 0.05], [x1, y0, h - 0.05], K.brick1); }
+    }
+    if (b.door && NODES[b.door]) { const [dx, dy] = NODES[b.door];
+      if (Math.abs(dy - y1) < 0.01) { fp([[dx - 0.2, y1, 0], [dx + 0.2, y1, 0], [dx + 0.2, y1, 0.6], [dx - 0.2, y1, 0.6]], K.wood2); wl([dx, y1, 0], [dx, y1, 0.6], K.wood3); } }
+    // roof
+    if (b.roof === 'gx') { const ym = b.y + b.d / 2;
+      fp([[x0 - o, y0 - o, h], [x1 + o, y0 - o, h], [x1 + o, ym, top], [x0 - o, ym, top]], K.roof3);
+      fp([[x1, y0, h], [x1, y1, h], [x1, ym, top]], b.mat === 'brick' ? PT.brickE : PT.plasE);
+      if (b.mat === 'chalet') { wl([x1, ym, h], [x1, ym, top], K.wood3); wl([x1, y0 + 0.3, h], [x1, ym, top - 0.2], K.wood3); wl([x1, y1 - 0.3, h], [x1, ym, top - 0.2], K.wood3); winE(x1, ym, h + 0.1, h + rh * 0.55, 0.12); }
+      fp([[x0 - o, y1 + o, h], [x1 + o, y1 + o, h], [x1 + o, ym, top], [x0 - o, ym, top]], PT.roofS);
+      wl([x0 - o, ym, top], [x1 + o, ym, top], K.roofH); wl([x0 - o, y1 + o, h], [x1 + o, y1 + o, h], K.roof3); wl([x1 + o, y1 + o, h], [x1 + o, ym, top], K.roofH);
+    } else if (b.roof === 'gy') { const xm = b.x + b.w / 2;
+      fp([[x0 - o, y0 - o, h], [x0 - o, y1 + o, h], [xm, y1 + o, top], [xm, y0 - o, top]], K.roof3);
+      fp([[x0, y1, h], [x1, y1, h], [xm, y1, top]], b.mat === 'brick' ? PT.brickS : PT.plasS);
+      if (b.mat === 'chalet') { wl([xm, y1, h], [xm, y1, top], K.wood3); wl([x0 + 0.3, y1, h], [xm, y1, top - 0.2], K.wood3); wl([x1 - 0.3, y1, h], [xm, y1, top - 0.2], K.wood3); winS(y1, xm, h + 0.1, h + rh * 0.55, 0.12); }
+      if (b.id === 'CH') { winS(y1, xm, h + 0.15, h + rh * 0.6, 0.18); }
+      fp([[x1 + o, y0 - o, h], [x1 + o, y1 + o, h], [xm, y1 + o, top], [xm, y0 - o, top]], PT.roofE);
+      wl([xm, y0 - o, top], [xm, y1 + o, top], K.roofH); wl([x1 + o, y0 - o, h], [x1 + o, y1 + o, h], K.roof3); wl([x1 + o, y1 + o, h], [xm, y1 + o, top], K.roofH);
+    } else if (b.roof === 'hip') { const ym = b.y + b.d / 2, xm = b.x + b.w / 2, i = Math.min(b.w, b.d) / 2;
+      const c00 = [x0 - o, y0 - o, h], c10 = [x1 + o, y0 - o, h], c11 = [x1 + o, y1 + o, h], c01 = [x0 - o, y1 + o, h];
+      const wide = b.w >= b.d, R0 = wide ? [x0 + i, ym, top] : [xm, y0 + i, top], R1 = wide ? [x1 - i, ym, top] : [xm, y1 - i, top];
+      fp([c00, c10, R1, R0], K.roof3); fp([c00, c01, wide ? R0 : R1, R0], K.roof3);
+      if (wide) { fp([c01, c11, R1, R0], PT.roofS); fp([c11, c10, R1], PT.roofE); } else { fp([c10, c11, R1, R0], PT.roofE); fp([c01, c11, R1], PT.roofS); }
+      wl(R0, R1, K.roofH); wl(c11, R1, K.roofH);
+    }
+    if (b.id === 'CH') { // tower
+      const s = 1.25, tx = b.x + b.w - s - 0.05, ty = b.y + b.d / 2 - s / 2, th = 3.1, X1 = tx + s, Y1 = ty + s;
+      fp([[tx, Y1, 0], [X1, Y1, 0], [X1, Y1, th], [tx, Y1, th]], PT.brickS); fp([[X1, Y1, 0], [X1, ty, 0], [X1, ty, th], [X1, Y1, th]], PT.brickE);
+      winS(Y1, tx + s / 2, th - 0.9, th - 0.3, 0.16); winE(X1, ty + s / 2, th - 0.9, th - 0.3, 0.16); wl([tx, Y1, th], [X1, Y1, th], K.brickH);
+      const ap = [tx + s / 2, ty + s / 2, th + 1.7];
+      fp([[tx - 0.05, Y1 + 0.05, th], [X1 + 0.05, Y1 + 0.05, th], ap], K.copper); fp([[X1 + 0.05, Y1 + 0.05, th], [X1 + 0.05, ty - 0.05, th], ap], K.copperD);
+      const [cx, cy] = Q(...ap); lineP(cx, cy - 1, cx, cy - 6, K.ink); lineP(cx - 2, cy - 4, cx + 2, cy - 4, K.ink);
+    }
+  });
+}
+function buildWallIso(w) {
+  const t = 0.1, horiz = w.y0 === w.y1, h = w.h, mat = w.b.mat;
+  return spriteFor([[w.x0 - t, w.y0 - t, 0], [w.x1 + t, w.y1 + t, 0], [w.x0 - t, w.y0 - t, h], [w.x1 + t, w.y1 + t, h], [w.x0 - t, w.y1 + t, h], [w.x1 + t, w.y0 - t, 0]], () => {
+    const face = w.kind === 'near' ? (mat === 'chalet' ? (horiz ? PT.plasS : PT.plasE) : (horiz ? PT.brickS : PT.brickE)) : (horiz ? PT.plasS : PT.plasE);
+    if (horiz) { const y = w.y0 + t; fp([[w.x0, y, 0], [w.x1, y, 0], [w.x1, y, h], [w.x0, y, h]], face);
+      if (w.kind === 'far') { const n = Math.floor((w.x1 - w.x0) / 1.2); for (let i = 0; i < n; i++) winS(y, w.x0 + (i + 0.5) * (w.x1 - w.x0) / n, h * 0.35, h * 0.8); }
+      fp([[w.x0, w.y0 - t, h], [w.x1, w.y0 - t, h], [w.x1, y, h], [w.x0, y, h]], K.brick4);
+    } else { const x = w.x0 + t; fp([[x, w.y1, 0], [x, w.y0, 0], [x, w.y0, h], [x, w.y1, h]], face);
+      if (w.kind === 'far') { const n = Math.floor((w.y1 - w.y0) / 1.2); for (let i = 0; i < n; i++) winE(x, w.y0 + (i + 0.5) * (w.y1 - w.y0) / n, h * 0.35, h * 0.8); }
+      fp([[w.x0 - t, w.y0, h], [x, w.y0, h], [x, w.y1, h], [w.x0 - t, w.y1, h]], K.brick4); }
+  });
+}
+function buildFenceIso(f) {
+  const h = f.wall ? 0.45 : 0.34, horiz = f.y0 === f.y1;
+  return spriteFor([[f.x0 - 0.2, f.y0 - 0.2, 0], [f.x1 + 0.2, f.y1 + 0.2, 0], [f.x0 - 0.2, f.y0 - 0.2, h], [f.x1 + 0.2, f.y1 + 0.2, h]], () => {
+    if (f.wall) { const t = 0.1;
+      if (horiz) { fp([[f.x0, f.y0 + t, 0], [f.x1, f.y0 + t, 0], [f.x1, f.y0 + t, h], [f.x0, f.y0 + t, h]], PT.brickS); fp([[f.x0, f.y0 - t, h], [f.x1, f.y0 - t, h], [f.x1, f.y0 + t, h], [f.x0, f.y0 + t, h]], K.brick4); }
+      else { fp([[f.x0 + t, f.y1, 0], [f.x0 + t, f.y0, 0], [f.x0 + t, f.y0, h], [f.x0 + t, f.y1, h]], PT.brickE); fp([[f.x0 - t, f.y0, h], [f.x0 + t, f.y0, h], [f.x0 + t, f.y1, h], [f.x0 - t, f.y1, h]], K.brick4); }
+      return; }
+    const col = K[f.col], len = horiz ? f.x1 - f.x0 : f.y1 - f.y0, P3 = (u, z) => horiz ? [f.x0 + u, f.y0, z] : [f.x0, f.y0 + u, z];
+    wl(P3(0, h * 0.85), P3(len, h * 0.85), col); wl(P3(0, h * 0.4), P3(len, h * 0.4), col);
+    for (let u = 0; u <= len + 1e-3; u += 0.5) wl(P3(u, 0), P3(u, h), col);
+  }, f.wall ? 'ink' : null);
+}
+function buildTree(k) {
+  const w = 26, h = 34, c = mk(w, h), g = c.getContext('2d'); srand(k * 977 + 13);
+  const cx = 13, base = 32; const blobs = [[13, 15, 8.5], [7.5, 18, 6], [18.5, 18, 6], [13, 9, 6.5], [9, 12, 5], [17, 12, 5]].map(([x, y, r]) => [x + (sr() - 0.5) * 2, y + (sr() - 0.5) * 2, r * (0.9 + sr() * 0.2)]);
+  g.fillStyle = K.wood2; g.fillRect(cx - 1, base - 11, 2, 11); g.fillStyle = K.wood3; g.fillRect(cx, base - 11, 1, 11);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let inside = false; for (const [bx, by, r] of blobs) if ((x - bx) ** 2 + (y - by) ** 2 < r * r) { inside = true; break; }
+    if (!inside) continue;
+    const l = -((x - cx) * 0.55 + (y - 13) * 0.85) / 9 + (hash(x + k * 40, y) - 0.5) * 0.55;
+    g.fillStyle = l > 0.45 ? K.leaf1 : l > -0.15 ? K.leaf2 : K.leaf3; g.fillRect(x, y, 1, 1);
+  }
+  outlineC(c, K.leaf4);
+  return { c, ox: cx, oy: base };
+}
+function buildLamp() { const c = mk(5, 17), g = c.getContext('2d'); g.fillStyle = K.ink2; g.fillRect(2, 4, 1, 13); g.fillRect(1, 16, 3, 1); g.fillRect(1, 0, 3, 1); g.fillStyle = K.lamp; g.fillRect(1, 1, 3, 3); g.fillStyle = K.ink2; g.fillRect(0, 1, 1, 3); g.fillRect(4, 1, 1, 3); return { c, ox: 2, oy: 16 }; }
+function buildBed(occ) {
+  return spriteFor([[-0.45, -0.25, 0], [0.45, 0.25, 0], [-0.45, 0.25, 0.2], [0.45, -0.25, 0.2]], () => {
+    boxO(-0.42, -0.22, 0.42, 0.22, 0, 0.14, occ ? K.blanket : K.bed1, K.wood2, K.wood3, null);
+    fp([[-0.42, -0.2, 0.15], [-0.2, -0.2, 0.15], [-0.2, 0.2, 0.15], [-0.42, 0.2, 0.15]], K.white);
+  }, 'ink2');
+}
+function buildCar(L, loco) {
+  const Y0 = SIDING_Y - 0.4, Y1 = SIDING_Y + 0.3;
+  return spriteFor([[0, Y0 - 0.1, 0], [L, Y1 + 0.1, 0], [0, Y1 + 0.1, 1.3], [L, Y0 - 0.1, 1.3]], () => {
+    if (loco) { boxO(0.9, Y0 + 0.1, L, Y1 - 0.1, 0.15, 0.58, K.roof3, K.ink2, K.ink, null); boxO(0, Y0, 0.9, Y1, 0.12, 0.9, K.trainR, K.train2, shade(K.train2, 0.8), null);
+      winS(Y1, 0.45, 0.6, 0.85, 0.16); boxO(L - 0.4, Y0 + 0.25, L - 0.2, Y0 + 0.45, 0.72, 0.4, K.ink, K.ink2, K.ink, null); }
+    else { boxO(0, Y0, L, Y1, 0.12, 0.8, K.trainR, K.train1, K.train2, null);
+      for (let x = 0.3; x < L - 0.2; x += 0.45) winS(Y1, x + 0.12, 0.5, 0.78, 0.11); }
+    for (let x = 0.3; x < L; x += 0.8) { const [a, b2] = Q(x, Y1, 0.05); px(a, b2, K.ink); px(a + 1, b2, K.ink); }
+  });
+}
+function buildBarge() {
+  const y0 = BARGE_Y[0], y1 = BARGE_Y[1], ym = (y0 + y1) / 2, zd = 0.35;
+  const deck = [[0.6, y0, zd], [7, y0, zd], [7.6, ym, zd], [7, y1, zd], [0.6, y1, zd], [0, ym, zd]];
+  return spriteFor(deck.concat(deck.map(p => [p[0], p[1], -0.2]), [[6, ym, 1.8]]), () => {
+    fp([[0, ym, -0.1], [0.6, y1, -0.1], [0.6, y1, zd], [0, ym, zd]], K.roof3);
+    fp([[0.6, y1, -0.1], [7, y1, -0.1], [7, y1, zd], [0.6, y1, zd]], K.ink2);
+    fp([[7, y1, -0.1], [7.6, ym, -0.1], [7.6, ym, zd], [7, y1, zd]], K.ink);
+    fp(deck, PT.planks); wl([0.6, y1, zd], [7, y1, zd], K.wood1);
+    boxO(5.1, y0 + 0.35, 6.3, y1 - 0.35, zd, 0.55, K.plas1, K.plas2, K.plas3, null); winS(y1 - 0.35, 5.5, zd + 0.2, zd + 0.42, 0.1); winS(y1 - 0.35, 5.9, zd + 0.2, zd + 0.42, 0.1);
+    boxO(5.5, ym - 0.17, 5.85, ym + 0.17, zd + 0.55, 0.7, K.ink, K.ink2, K.ink, null); boxO(5.5, ym - 0.17, 5.85, ym + 0.17, zd + 1.05, 0.12, K.flower, K.flower, shade(K.flower, .8), null);
+  });
+}
+function buildMusic() { const m = SPECIAL[0];
+  return spriteFor(circ(m.cx, m.cy, m.r + 0.2, 8, 0).concat(circ(m.cx, m.cy, m.r + 0.2, 8, 2)), () => {
+    const base = circ(m.cx, m.cy, m.r, 8, 0.2), ground = circ(m.cx, m.cy, m.r, 8, 0);
+    for (let i = 0; i < 8; i++) { const a = ground[i], b2 = ground[(i + 1) % 8]; if (a[0] + a[1] + b2[0] + b2[1] < 2 * (m.cx + m.cy)) continue; fp([a, b2, base[(i + 1) % 8], base[i]], K.stone2); }
+    fp(base, K.stone1);
+    const roofZ = 0.95, rim = circ(m.cx, m.cy, m.r + 0.15, 8, roofZ), apex = [m.cx, m.cy, 1.8];
+    for (let i = 0; i < 8; i++) { const p = base[i]; if (p[0] + p[1] > m.cx + m.cy - 0.6) wl([p[0], p[1], 0.2], [p[0], p[1], roofZ], K.wood3); }
+    for (let i = 0; i < 8; i++) { const a = rim[i], b2 = rim[(i + 1) % 8]; const s = a[0] + a[1] + b2[0] + b2[1] - 2 * (m.cx + m.cy); fp([a, b2, apex], s > 0 ? (a[0] - a[1] > 0 ? K.roof2 : K.roof1) : K.roof3); }
+    const [ax, ay] = Q(...apex); lineP(ax, ay, ax, ay - 3, K.ink);
+  });
+}
+const SPR = {}, GROUND = {};
+function buildIsoAll() {
+  for (const v of ['day', 'dusk', 'night']) {
+    K = PALS[v]; VK = v; buildPatterns();
+    const S = { bld: {}, walls: [], fences: [], trees: [0, 1, 2].map(buildTree), lamp: buildLamp(), bedE: buildBed(false), bedO: buildBed(true), car: buildCar(2.7, false), loco: buildCar(2.3, true), barge: buildBarge(), music: buildMusic() };
+    for (const b of BLD) if (!b.cut) S.bld[b.id] = buildSolid(b);
+    S.walls = ISO_WALLS.map(buildWallIso); S.fences = FENCES.map(buildFenceIso);
+    SPR[v] = S; GROUND[v] = renderGroundIso();
+    buildTopDown(v);
+  }
+  K = PALS.day; VK = 'day';
+}
+
+/* ---- per-frame iso view ---- */
+function hlOf(s) { if (!s.hl) { const c = mk(s.c.width + 2, s.c.height + 2); c.getContext('2d').drawImage(s.c, 1, 1); outlineC(c, '#f0c850'); s.hl = { c, ax: s.ax - 1, ay: s.ay - 1 }; } return s.hl; }
+function behind(a, b) { return a.x1 <= b.x0 + 1e-3 || a.y1 <= b.y0 + 1e-3; }
+function cmpItems(a, b) { if (behind(a, b)) return -1; if (behind(b, a)) return 1; return (a.x0 + a.y0 + a.x1 + a.y1) - (b.x0 + b.y0 + b.x1 + b.y1); }
+function dashLine(g, pts, col, off, ox, oy) {
+  let n = 0; g.fillStyle = col;
+  for (let i = 0; i < pts.length - 1; i++) { let [x0, y0] = pts[i], [x1, y1] = pts[i + 1]; x0 = Math.round(x0 - ox); y0 = Math.round(y0 - oy); x1 = Math.round(x1 - ox); y1 = Math.round(y1 - oy);
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx + dy;
+    for (let k = 0; k < 3000; k++) { if (md(n + off, 8) < 4) { g.fillRect(x0, y0, 1, 2); } n++; if (x0 === x1 && y0 === y1) break; const e2 = 2 * err; if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } } }
+}
+function stagePlate(g, i, x, y) {
+  const s = ['I', 'II', 'III', 'IV', 'V'][i], w = textW(s) + 6, col = ['#6b5641', '#a3432a', '#a3432a', '#5f7a3f', '#3f5a73'][i];
+  x = Math.round(x - w / 2); y = Math.round(y - 12);
+  g.fillStyle = '#1d1a1f'; g.fillRect(x - 1, y - 1, w + 2, 13); g.fillStyle = col; g.fillRect(x, y, w, 11); g.fillStyle = '#f3e9cf'; g.fillRect(x + 1, y + 1, w - 2, 9);
+  drawText(g, s, x + 3, y + 1, col); g.fillStyle = '#1d1a1f'; g.fillRect(x + Math.floor(w / 2), y + 12, 1, 4);
+}
+function srcBadge(g, src, x, y) {
+  x = Math.round(x) - 3; y = Math.round(y) - 3; const P = ['.###.', '#####', '#####', '#####', '.###.'];
+  g.fillStyle = '#1d1a1f'; for (let r = -1; r < 6; r++) for (let c = -1; c < 6; c++) { const on = (rr, cc) => rr >= 0 && rr < 5 && cc >= 0 && cc < 5 && P[rr][cc] === '#'; if (!on(r, c) && (on(r - 1, c) || on(r + 1, c) || on(r, c - 1) || on(r, c + 1))) g.fillRect(x + c, y + r, 1, 1); }
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) if (P[r][c] === '#') { const inner = r > 0 && r < 4 && c > 0 && c < 4; g.fillStyle = src === 'b' ? '#1d1a1f' : src === 'r' ? (c < 2 || !inner ? '#1d1a1f' : '#f3e9cf') : (inner ? '#f3e9cf' : '#1d1a1f'); g.fillRect(x + c, y + r, 1, 1); }
+}
+function drawIsoView(g, cx, cy, t) {
+  const S = SPR[VK]; K = PALS[VK];
+  g.drawImage(GROUND[VK], -cx, -cy);
+  g.fillStyle = K.water5; for (const [x, y, ph, len] of GLINTS) { if (Math.floor(t * 1.3 + ph) % 3 !== 0) continue; const [a, b] = A(x, y); g.fillRect(Math.round(a - cx), Math.round(b - cy), len, 1); }
+  if (showPlan) for (const r of ROUTES) dashLine(g, r.ids.map(k => A(NODES[k][0], NODES[k][1])), ROUTE_COL[r.st], -Math.floor(t * 10), cx, cy);
+  if (FLASH.t > 0 && Math.floor(t * 6) % 2 === 0) { const [x0, y0, x1, y1] = STAGE_AREAS[FLASH.stage]; dashLine(g, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]].map(p => A(p[0], p[1])), '#f0c850', 0, cx, cy); }
+  const items = [], selB = selected && selected.b, hovB = hovered && hovered.b;
+  const put = (x0, y0, x1, y1, d) => items.push({ x0, y0, x1, y1, d });
+  const blit = (s, dx = 0, dy = 0) => g.drawImage(s.c, s.ax - cx + dx, s.ay - cy + dy);
+  for (const b of BLD) if (!b.cut) { const s = S.bld[b.id]; put(b.x, b.y, b.x + b.w, b.y + b.d, () => blit(b === selB || b === hovB ? hlOf(s) : s)); }
+  ISO_WALLS.forEach((w, i) => { const t2 = 0.1; put(Math.min(w.x0, w.x1) - (w.x0 === w.x1 ? t2 : 0), Math.min(w.y0, w.y1) - (w.y0 === w.y1 ? t2 : 0), Math.max(w.x0, w.x1) + (w.x0 === w.x1 ? t2 : 0), Math.max(w.y0, w.y1) + (w.y0 === w.y1 ? t2 : 0), () => blit(S.walls[i])); });
+  FENCES.forEach((f, i) => put(Math.min(f.x0, f.x1) - 0.05, Math.min(f.y0, f.y1) - 0.05, Math.max(f.x0, f.x1) + 0.05, Math.max(f.y0, f.y1) + 0.05, () => blit(S.fences[i])));
+  TREES.forEach((tr, i) => put(tr[0] - 0.3, tr[1] - 0.3, tr[0] + 0.3, tr[1] + 0.3, () => { const T = S.trees[i % 3], [a, b] = A(tr[0], tr[1]); g.drawImage(T.c, Math.round(a - cx - T.ox), Math.round(b - cy - T.oy)); }));
+  LAMPS.forEach(l => put(l[0] - 0.05, l[1] - 0.05, l[0] + 0.05, l[1] + 0.05, () => { const [a, b] = A(l[0], l[1]); g.drawImage(S.lamp.c, Math.round(a - cx - 2), Math.round(b - cy - 16)); }));
+  const m = SPECIAL[0]; put(m.cx - m.r, m.cy - m.r, m.cx + m.r, m.cy + m.r, () => blit(S.music));
+  const [o0, o1] = A(0, 0);
+  for (const bd of BEDS) put(bd.x - 0.42, bd.y - 0.22, bd.x + 0.42, bd.y + 0.22, () => { const [a, b] = A(bd.x, bd.y); blit(bd.occ ? S.bedO : S.bedE, Math.round(a - o0), Math.round(b - o1)); });
+  for (const a of agents) if (!a.hidden && !a.dead) put(a.x - 0.12, a.y - 0.12, a.x + 0.12, a.y + 0.12, () => { const [x, y] = A(a.x, a.y, a.pose === 'lie' ? 0.14 : 0); drawPerson(g, a, x - cx, y - cy, 'iso'); });
+  if (train.state !== 'away') { let fx = train.x; [[2.3, 1], [2.7, 0], [2.7, 0], [2.7, 0]].forEach(([L, loco]) => { const x0 = fx - L, dx = x0 * TW2, dy = x0 * TH2; put(x0, SIDING_Y - 0.4, fx, SIDING_Y + 0.3, () => blit(loco ? S.loco : S.car, Math.round(dx), Math.round(dy))); fx = x0 - 0.15; }); }
+  if (barge.state !== 'away') put(barge.x, BARGE_Y[0], barge.x + 7.6, BARGE_Y[1], () => { blit(S.barge, Math.round(barge.x * TW2), Math.round(barge.x * TH2));
+    const n = Math.min(barge.count, 48); for (let i = 0; i < n; i++) { const [a, b] = A(barge.x + 0.9 + (i % 12) * 0.34, BARGE_Y[0] + 0.2 + Math.floor(i / 12) * 0.3, 0.35); g.fillStyle = vt(COATS[i % COATS.length], VK); g.fillRect(Math.round(a - cx), Math.round(b - cy) - 3, 2, 3); g.fillStyle = vt(SKIN[i % 4], VK); g.fillRect(Math.round(a - cx), Math.round(b - cy) - 4, 2, 1); } });
+  items.sort(cmpItems);
+  for (let pass = 0; pass < 2; pass++) for (let i = 1; i < items.length; i++) { let j = i; while (j > 0 && behind(items[j], items[j - 1])) { const tt = items[j]; items[j] = items[j - 1]; items[j - 1] = tt; j--; } }
+  for (const it of items) it.d();
+  // watchman light
+  for (const a of agents) if (a.lantern && !a.hidden && !a.dead && nightK() > 0.3) { const [x, y] = A(a.x, a.y); g.fillStyle = 'rgba(255,214,120,.22)'; for (let yy = -5; yy <= 5; yy++) for (let xx = -10; xx <= 10; xx++) if ((xx / 10) ** 2 + (yy / 5) ** 2 < 1 && ((xx + yy) & 1) === 0) g.fillRect(Math.round(x - cx + xx), Math.round(y - cy + yy), 1, 1); }
+  // overlays
+  if (showPlan) STAGE_POS.forEach(([x, y], i) => { const [a, b] = A(x, y, 0.9); stagePlate(g, i, a - cx, b - cy); });
+  if (showSrc) { for (const b of BLD) { const [a, bb] = A(b.x + b.w / 2, b.y + b.d / 2, b.h + (b.rh || 0) + 0.5); srcBadge(g, b.src, a - cx, bb - cy); }
+    [[16.8, 11.4, 2.2, 'b'], [37.2, 2.8, 0.6, 'b'], [47, -3, 0.6, 'r'], [31.5, -6.3, 0.6, 'r'], [76.8, 38.9, 0.8, 'b']].forEach(([x, y, z, s]) => { const [a, bb] = A(x, y, z); srcBadge(g, s, a - cx, bb - cy); }); }
+  overlayPeople(g, (x, y, z) => { const [a, b] = A(x, y, z); return [a - cx, b - cy]; }, t);
+}
+function overlayPeople(g, proj, t) {
+  if (CASE.state === 'pending' && CASE.fam.D && !CASE.fam.D.dead) { const D2 = CASE.fam.D; const [x, y] = proj(D2.x, D2.y, 0); const yy = Math.round(y - 22 - (Math.floor(t * 3) % 2));
+    g.fillStyle = '#1d1a1f'; g.fillRect(Math.round(x) - 4, yy - 1, 9, 11); g.fillStyle = '#8a2418'; g.fillRect(Math.round(x) - 3, yy, 7, 9); drawText(g, '!', Math.round(x), yy + 1, '#f3e9cf'); g.fillStyle = '#1d1a1f'; g.fillRect(Math.round(x), yy + 10, 1, 2); }
+  const placed = [];
+  for (const a of agents) if (a.case && !a.hidden && !a.dead && (VIEW_S >= 2 || hovered?.a === a)) { const [x, y] = proj(a.x, a.y, 0);
+    if (placed.some(([px2, py2]) => Math.abs(px2 - x) < 34 && Math.abs(py2 - y) < 10) && hovered?.a !== a) continue; placed.push([x, y]); const s = a.name.split(' ')[0], c = tc(s, '#7a1f16', 1, '#f3e9cf'); g.drawImage(c, Math.round(x - c.width / 2), Math.round(y - (a.pose === 'lie' ? 12 : a.age < 13 ? 17 : 23))); }
+}
+
+/* ---------------------------------------------------------------------
+   TOP-DOWN VIEW – roofs off, walls with a front face, every room visible
+   --------------------------------------------------------------------- */
+const TT = 14, TDB = { x0: -8, y0: -16, x1: 120, y1: 64 };
+const TDW = (TDB.x1 - TDB.x0) * TT, TDH = (TDB.y1 - TDB.y0) * TT;
+const TP = (x, y) => [(x - TDB.x0) * TT, (y - TDB.y0) * TT];
+const TPD = (x, y) => { const [a, b] = TP(x, y); return [a - D.ox, b - D.oy]; };
+const unTP = (a, b) => [a / TT + TDB.x0, b / TT + TDB.y0];
+const TDG = {}, TDC = {};
+let PTD = {}; const PTDV = {};
+const WALL_T = 0.2, FRONT = 5;
+function tr(x0, y0, x1, y1, fill) { const [a, b] = TPD(x0, y0), [c, d] = TPD(x1, y1); D.g.fillStyle = fill; D.g.fillRect(Math.round(a), Math.round(b), Math.max(1, Math.round(c) - Math.round(a)), Math.max(1, Math.round(d) - Math.round(b))); }
+function tpoly(pts, fill) { spans(pts.map(p => TPD(p[0], p[1])), fill); }
+function tline(p, q, col) { const a = TPD(p[0], p[1]), b = TPD(q[0], q[1]); lineP(a[0], a[1], b[0], b[1], col); }
+function tcirc(cx, cy, r, fill) { const [a, b] = TPD(cx, cy), R = r * TT; D.g.fillStyle = fill; for (let y = -Math.ceil(R); y <= Math.ceil(R); y++) { const w = Math.sqrt(Math.max(0, R * R - y * y)); if (w > 0) D.g.fillRect(Math.round(a - w), Math.round(b + y), Math.round(2 * w), 1); } }
+function tlabel(g, s, x, y, col, halo, sc = 1) { const [a, b] = TP(x, y), w = textW(s) * sc; drawTextHalo(g, s, Math.round(a - w / 2), Math.round(b - 4 * sc), col, halo, sc); }
+function tbox(x0, y0, x1, y1, top, front, edge = K.ink2) { const [a, b] = TPD(x0, y0), [c, d] = TPD(x1, y1); const g = D.g, X = Math.round(a), Y = Math.round(b), W = Math.max(2, Math.round(c) - X), H = Math.max(2, Math.round(d) - Y);
+  g.fillStyle = edge; g.fillRect(X - 1, Y - 1, W + 2, H + 3); g.fillStyle = top; g.fillRect(X, Y, W, H); if (front) { g.fillStyle = front; g.fillRect(X, Y + H, W, 1); } }
+function tbed(x, y, occ, bunk) { tbox(x - 0.42, y - 0.22, x + 0.42, y + 0.2, occ ? K.blanket : K.bed1, K.wood2); tr(x - 0.4, y - 0.2, x - 0.18, y + 0.18, K.white); if (bunk) tline([x - 0.15, y + 0.02], [x + 0.4, y + 0.02], K.bed2); }
+
+/* beds in the closed pavilions and hotels (sleepers who are "inside" appear here) */
+const TDBEDS = {};
+for (const b of BLD) if ((/^P\d+$/.test(b.id) && b.id !== 'P17') || ['HS', 'HN', 'LAZ'].includes(b.id)) {
+  const L = TDBEDS[b.id] = [];
+  if (b.d > b.w) { for (let y = b.y + 0.55; y < b.y + b.d - 0.45; y += 0.62) { L.push([b.x + 0.62, y]); if (b.w > 1.8) L.push([b.x + b.w - 0.62, y]); } }
+  else { for (let x = b.x + 0.7; x < b.x + b.w - 0.5; x += 0.95) { L.push([x, b.y + 0.42]); if (b.d > 1.8) L.push([x, b.y + b.d - 0.42]); } }
+}
+function tdWindows(w) {
+  if (w.kind === 'inner') return; const horiz = w.y0 === w.y1, len = horiz ? w.x1 - w.x0 : w.y1 - w.y0; if (len < 1.2) return;
+  const n = Math.floor(len / 1.3);
+  for (let i = 0; i < n; i++) { const u = (horiz ? w.x0 : w.y0) + (i + 0.5) * len / n, hw = 0.24;
+    if (horiz) tr(u - hw, w.y0 - 0.06, u + hw, w.y0 + 0.07, K.win); else tr(w.x0 - 0.06, u - hw, w.x0 + 0.07, u + hw, K.win); }
+}
+function doorArcs(b) {
+  const list = (b.doors || []).slice(); if (b.doorAt) list.push(b.doorAt);
+  for (const [dx, dy] of list) { const [a, c] = TP(dx, dy), r = 0.5 * TT;
+    const onH = Math.abs(dy - b.y) < 0.01 || Math.abs(dy - b.y - b.d) < 0.01, inward = onH ? (Math.abs(dy - b.y) < 0.01 ? 1 : -1) : (Math.abs(dx - b.x) < 0.01 ? 1 : -1);
+    for (let k = 0; k <= 10; k += 2) { const t = k / 10 * Math.PI / 2; const ox = Math.cos(t) * r, oy = Math.sin(t) * r;
+      if (onH) px(a - r / 2 + ox, c + inward * oy, K.ink2); else px(a + inward * oy, c - r / 2 + ox, K.ink2); }
+    if (onH) lineP(a - r / 2, c, a - r / 2, c + inward * r, K.wood2); else lineP(a, c - r / 2, a + inward * r, c - r / 2, K.wood2);
+  }
+}
+function tdInterior(b) {
+  const x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.d, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+  if (b.id === 'CH') { tr(x0, y0, x1, y1, PTD.checker);
+    for (let x = x0 + 1.2; x < x1 - 1.6; x += 0.45) { tbox(x, y0 + 0.4, x + 0.16, ym - 0.3, K.wood1, K.wood3); tbox(x, ym + 0.3, x + 0.16, y1 - 0.4, K.wood1, K.wood3); }
+    tbox(x0 + 0.3, ym - 0.5, x0 + 0.7, ym + 0.5, K.white, K.whiteS); tr(x1 - 1.3, ym - 0.62, x1 - 0.05, ym + 0.62, K.stone2); return; }
+  if (b.id === 'SYN') { tr(x0, y0, x1, y1, PTD.floor); tbox(xm - 0.45, ym - 0.35, xm + 0.45, ym + 0.35, K.wood1, K.wood3); tbox(x1 - 0.4, ym - 0.5, x1 - 0.15, ym + 0.5, '#6a2a3a', '#4a1a28');
+    tbox(x0 + 0.3, y0 + 0.25, x1 - 0.7, y0 + 0.42, K.wood2, K.wood3); tbox(x0 + 0.3, y1 - 0.45, x1 - 0.7, y1 - 0.28, K.wood2, K.wood3); return; }
+  if (b.id === 'KIT') { tr(x0, y0, x1, y1, PTD.tiles); tbox(x0 + 0.5, y0 + 0.5, x0 + 1.8, y0 + 1.2, K.roof3, K.ink, K.ink); tbox(x1 - 1.8, y1 - 1.2, x1 - 0.5, y1 - 0.5, K.roof3, K.ink, K.ink); tcirc(xm, ym, 0.45, K.metal); tcirc(xm, ym, 0.3, K.metalL); return; }
+  if (b.id === 'CM') { tr(x0, y0, x1, y1, PTD.tiles); for (let x = x0 + 0.6; x < x1 - 0.8; x += 1.2) tbox(x, y0 + 0.4, x + 0.8, y0 + 1.0, K.white, K.whiteS); return; }
+  if (b.id === 'STALL') { tr(x0, y0, x1, y1, PTD.planks); tr(x0 + 0.2, y0 + 0.2, x1 - 0.2, ym, K.flower); return; }
+  if (/M$/.test(b.id) && b.id !== 'CM') { tr(x0, y0, x1, y1, PTD.tiles); for (let x = x0 + 0.3; x < x1 - 0.3; x += 0.6) tcirc(x, y0 + 0.35, 0.12, K.white); return; }
+  tr(x0, y0, x1, y1, b.id === 'WERK' ? PTD.stone : PTD.floor);
+  if (b.id === 'VER' || b.id === 'VER2' || b.id === 'BEA') { for (let x = x0 + 0.5; x < x1 - 0.8; x += 1.4) for (let y = y0 + 0.6; y < y1 - 0.6; y += 1.6) { tbox(x, y, x + 0.8, y + 0.45, K.wood1, K.wood3); tbox(x + 0.3, y + 0.55, x + 0.5, y + 0.72, K.wood2, K.wood3); } return; }
+  if (b.id === 'WERK') { srand(5); for (let i = 0; i < 12; i++) { const x = x0 + 0.4 + sr() * (b.w - 1.2), y = y0 + 0.3 + sr() * (b.d - 0.9); tbox(x, y, x + 0.5, y + 0.3, sr() < 0.5 ? K.wood1 : '#8a6d45', K.wood3); } return; }
+  if (b.id === 'SHW') { for (let y = y0 + 0.8; y < y1 - 0.6; y += 1.2) { tbox(x0 + 0.6, y, x1 - 0.6, y + 0.28, K.wood1, K.wood2); } return; }
+  for (const [x, y] of TDBEDS[b.id] || []) tbed(x, y, false, b.id[0] === 'P');
+}
+function renderTopDown() {
+  const c = mk(TDW, TDH), g = c.getContext('2d'); D = { g, ox: 0, oy: 0 };
+  g.fillStyle = PT.meadow; g.fillRect(0, 0, TDW, TDH);
+  const PTs = PT; PT = Object.assign({}, PT, { cobble: PTD.cobble, stone: PTD.stone, planks: PTD.planks, tiles: PTD.tiles, floor: PTD.floor });
+  groundCommon((p, f) => tpoly(p, f), null, (a, b, col) => tline(a, b, col));
+  PT = PTs;
+  tbox(TRAIN_STOP + 0.2, SIDING_Y - 0.3, TRAIN_STOP + 0.5, SIDING_Y + 0.3, K.brick2, K.brick3);
+  TREES.forEach(([x, y]) => { const [a, b] = TP(x + 0.25, y + 0.3); g.fillStyle = K.ink; for (let yy = -8; yy <= 8; yy++) for (let xx = -10; xx <= 10; xx++) if ((xx / 10) ** 2 + (yy / 8) ** 2 < 1 && ((xx + yy) & 1) === 0) g.fillRect(Math.round(a + xx), Math.round(b + yy), 1, 1); });
+  for (const b of BLD) { if (b.cut) tr(b.x, b.y, b.x + b.w, b.y + b.d, b.zone === 'C' ? PTD.stone : PTD.floor); else tdInterior(b); }
+  for (const r of ['BATH_M', 'BATH_F', 'DIS']) { const R = ROOMS[r]; tr(R.x - 0.3, R.y - 0.3, R.x + R.w + 0.3, R.y + R.d + 0.3, PTD.tiles); }
+  for (const [x, y] of SHOWERS) tcirc(x, y - 0.2, 0.12, K.metal);
+  for (const f of FURN) { const [k, x0, y0, x1, y1] = f;
+    if (k === 'appar') { tbox(x0, y0, x1, y1, K.metalL, K.metal, K.ink); for (let x = x0 + 0.5; x < x1; x += 0.8) tr(x, y0, x + 0.07, y1, K.metal); tcirc(x1 - 0.1, (y0 + y1) / 2, 0.45, K.metal); }
+    else if (k === 'exam') tbox(x0, y0, x1, y1, K.white, K.whiteS);
+    else if (k === 'table') { tbox(x0, y0, x1, y1, K.wood1, K.wood2); tbox(x0, y0 - 0.34, x1, y0 - 0.22, K.wood2, K.wood3); tbox(x0, y1 + 0.2, x1, y1 + 0.32, K.wood2, K.wood3); }
+    else tbox(x0, y0, x1, y1, k === 'crate' ? '#8a6d45' : K.wood1, K.wood2); }
+  { const m = SPECIAL[0]; tcirc(m.cx, m.cy, m.r + 0.1, K.ink2); tcirc(m.cx, m.cy, m.r, PTD.floor); for (let i = 0; i < 8; i++) { const t = i / 8 * Math.PI * 2; tcirc(m.cx + Math.cos(t) * (m.r - 0.1), m.cy + Math.sin(t) * (m.r - 0.1), 0.08, K.wood3); } }
+  for (const b of BLD) doorArcs(b);
+  // walls on their own layer → front faces, tops, crisp outline
+  const L = mk(TDW, TDH), lg = L.getContext('2d'), prev = D; D = { g: lg, ox: 0, oy: 0 };
+  const walls = []; for (const b of BLD) walls.push(...wallsOf(b));
+  for (const w of walls) if (w.y0 === w.y1) { const [a, b] = TP(w.x0, w.y0 + WALL_T / 2), [c2] = TP(w.x1, 0); lg.fillStyle = w.b.mat === 'chalet' || w.b.mat === 'plaster' ? PTD.plasF : PTD.brickF; lg.fillRect(Math.round(a), Math.round(b), Math.round(c2) - Math.round(a), FRONT);
+    if (w.b.mat === 'chalet') { lg.fillStyle = K.wood3; lg.fillRect(Math.round(a), Math.round(b) + FRONT - 1, Math.round(c2) - Math.round(a), 1); for (let x = Math.round(a); x < c2; x += 7) lg.fillRect(x, Math.round(b), 1, FRONT); } }
+  for (const w of walls) { const t = WALL_T / 2, top = w.b.mat === 'chalet' ? K.wood2 : w.b.mat === 'plaster' ? K.plas3 : K.brick3, hi = w.b.mat === 'chalet' ? K.plas2 : w.b.mat === 'plaster' ? K.plas1 : K.brick1;
+    if (w.y0 === w.y1) { tr(w.x0 - t, w.y0 - t, w.x1 + t, w.y0 + t, top); tr(w.x0 - t, w.y0 - t, w.x1 + t, w.y0 - t + 0.07, hi); }
+    else { tr(w.x0 - t, w.y0 - t, w.x0 + t, w.y1 + t, top); tr(w.x0 - t, w.y0 - t, w.x0 - t + 0.07, w.y1 + t, hi); }
+    tdWindows(w); }
+  { const ch = BMAP.CH; tr(ch.x + ch.w - 1.35, ch.y + ch.d / 2 - 0.68, ch.x + ch.w, ch.y + ch.d / 2 + 0.68, K.brick3); tr(ch.x + ch.w - 1.15, ch.y + ch.d / 2 - 0.48, ch.x + ch.w - 0.2, ch.y + ch.d / 2 + 0.48, K.copperD); }
+  for (const f of FENCES) if (f.wall) { const t = 0.12; if (f.y0 === f.y1) { tr(f.x0 - t, f.y0 - t, f.x1 + t, f.y0 + t, K.brick3); const [a, b] = TP(f.x0, f.y0 + t), [c2] = TP(f.x1, 0); lg.fillStyle = PTD.brickF; lg.fillRect(Math.round(a), Math.round(b), Math.round(c2 - a), 3); } else tr(f.x0 - t, f.y0 - t, f.x0 + t, f.y1 + t, K.brick3); }
+  outlineC(L, K.ink); g.drawImage(L, 0, 0); D = prev;
+  for (const f of FENCES) if (!f.wall) { const col = K[f.col], horiz = f.y0 === f.y1; if (horiz) { tline([f.x0, f.y0], [f.x1, f.y0], col); for (let x = f.x0; x <= f.x1; x += 0.5) tr(x - 0.04, f.y0 - 0.06, x + 0.06, f.y0 + 0.08, col); }
+    else { tline([f.x0, f.y0], [f.x0, f.y1], col); for (let y = f.y0; y <= f.y1; y += 0.5) tr(f.x0 - 0.06, y - 0.04, f.x0 + 0.08, y + 0.06, col); } }
+  if (VK !== 'day') for (const [lx, ly] of LAMPS) { const [a, b] = TP(lx, ly); for (let yy = -16; yy <= 16; yy++) for (let xx = -16; xx <= 16; xx++) { const d = (xx / 16) ** 2 + (yy / 16) ** 2; if (d < 0.3 || (d < 1 && ((xx + yy) & 1) === 0)) { g.fillStyle = d < 0.3 ? K.glow : K.pool; g.fillRect(Math.round(a + xx), Math.round(b + yy), 1, 1); } } }
+  for (const [lx, ly] of LAMPS) { const [a, b] = TP(lx, ly); g.fillStyle = K.ink; g.fillRect(Math.round(a) - 1, Math.round(b) - 1, 3, 3); g.fillStyle = K.lamp; g.fillRect(Math.round(a), Math.round(b), 1, 1); }
+  const halo = K.paperL;
+  for (const [t, x, y, col, sc] of LABELS) tlabel(g, t, x, y, K[col], col === 'water5' ? K.water2 : halo, sc);
+  for (const [k, R] of Object.entries(ROOMS)) if (R.label) tlabel(g, R.label.toUpperCase(), R.x + R.w / 2, R.y + R.d - 0.4, K.ink2, halo);
+  for (const b of BLD) if (!b.cut && b.w * b.d > 6) tlabel(g, b.name.toUpperCase(), b.x + b.w / 2, b.y + b.d / 2 + 0.1, K.ink2, halo);
+  for (let i = 0; i < 4; i++) tr(2 + i * 2.2, 33, 4.2 + i * 2.2, 33.25, i % 2 ? K.paperL : K.ink);
+  tlabel(g, '0', 2, 33.9, K.ink, halo); tlabel(g, '20', 6.4, 33.9, K.ink, halo); tlabel(g, '40 M', 10.8, 33.9, K.ink, halo);
+  { const [a, b] = TP(-3, 8); lineP(a, b, a, b - 20, K.ink); lineP(a + 1, b, a + 1, b - 20, K.ink); lineP(a - 3, b - 16, a + 0.5, b - 20, K.ink); lineP(a + 4, b - 16, a + 0.5, b - 20, K.ink); drawTextHalo(g, 'N', Math.round(a - 1), Math.round(b - 31), K.ink, halo); }
+  return c;
+}
+function renderCanopies() {
+  const c = mk(TDW, TDH), g = c.getContext('2d');
+  TREES.forEach(([x, y], i) => { const [a, b] = TP(x, y); srand(i * 31 + 7); const cx = Math.round(a), cy = Math.round(b) - 4, R = 9 + Math.floor(sr() * 3);
+    const blobs = [[0, 0, R], [-5, 3, R * 0.7], [5, 3, R * 0.7], [0, -5, R * 0.7]];
+    const t = mk(2 * R + 12, 2 * R + 12), tg = t.getContext('2d'), o = R + 6;
+    for (let yy = -o; yy < o; yy++) for (let xx = -o; xx < o; xx++) { let inside = false; for (const [bx, by, r] of blobs) if ((xx - bx) ** 2 + (yy - by) ** 2 < r * r) inside = true; if (!inside) continue;
+      const l = -(xx * 0.6 + yy * 0.8) / R + (hash(xx + i * 50, yy) - 0.5) * 0.6; tg.fillStyle = l > 0.35 ? K.leaf1 : l > -0.3 ? K.leaf2 : K.leaf3; tg.fillRect(xx + o, yy + o, 1, 1); }
+    outlineC(t, K.leaf4); g.drawImage(t, cx - o, cy - o); });
+  return c;
+}
+function buildTopDown(v) {
+  PTD = {
+    floor: mkPat(12, 6, coursed(K.floor1, K.floor2, K.floor3, K.floor1, K.floor2, 0, 3, 12)),
+    tiles: mkPat(4, 4, (x, y) => (x === 0 || y === 0) ? K.tile2 : K.tile1),
+    checker: mkPat(8, 8, (x, y) => ((x >> 2) + (y >> 2)) % 2 ? K.stone1 : K.plas2),
+    cobble: mkPat(8, 6, coursed(K.pave1, K.pave2, K.pave2, K.paveH, K.pave3, 0, 3, 4)),
+    stone: mkPat(16, 12, (x, y) => (x % 8 === 0 || y % 6 === 0) ? K.stone2 : hash(x, y) < 0.06 ? K.stone2 : K.stone1),
+    planks: mkPat(12, 6, (x, y) => x % 3 === 0 ? K.wood2 : K.wood1),
+    brickF: mkPat(12, 6, coursed(K.brick1, K.mortar, K.mortar, K.brickH, K.brick2, 0)),
+    plasF: mkPat(16, 16, speckle(K.plas1, [[K.plas2, 0.06]]))
+  };
+  PTDV[v] = PTD; TDG[v] = renderTopDown(); TDC[v] = renderCanopies();
+}
+/* ---- per-frame top-down view ---- */
+function tdSpotFor(a) {
+  const L = a.follow ? a.follow.leader : a, b = L.hideB; if (!b) return null;
+  if (!a.tdSpot || a.tdSpot.b !== b) { const beds = TDBEDS[b.id]; const p = beds && beds.length ? beds[(a.id * 7) % beds.length] : [b.x + 0.5 + hash(a.id, 3) * (b.w - 1), b.y + 0.5 + hash(a.id, 9) * (b.d - 1)]; a.tdSpot = { b, x: p[0], y: p[1] }; }
+  return a.tdSpot;
+}
+function drawTDView(g, cx, cy, t) {
+  K = PALS[VK];
+  g.drawImage(TDG[VK], -cx, -cy);
+  g.fillStyle = K.water5; for (const [x, y, ph, len] of GLINTS) { if (Math.floor(t * 1.3 + ph) % 3 !== 0) continue; const [a, b] = TP(x, y); g.fillRect(Math.round(a - cx), Math.round(b - cy), len, 1); }
+  if (showPlan) for (const r of ROUTES) dashLine(g, r.ids.map(k => TP(NODES[k][0], NODES[k][1])), ROUTE_COL[r.st], -Math.floor(t * 10), cx, cy);
+  const prevD = D; D = { g, ox: cx, oy: cy };
+  for (const bd of BEDS) tbed(bd.x, bd.y, !!bd.occ, false);
+  if (train.state !== 'away') { let fx = train.x; const Y0 = SIDING_Y - 0.4, Y1 = SIDING_Y + 0.3; [[2.3, 1], [2.7, 0], [2.7, 0], [2.7, 0]].forEach(([L, loco]) => { const x0 = fx - L;
+      if (loco) { tbox(x0 + 0.9, Y0 + 0.08, fx, Y1 - 0.08, K.roof3, K.ink); tbox(x0, Y0, x0 + 0.9, Y1, K.trainR, K.train2); tcirc(fx - 0.3, (Y0 + Y1) / 2, 0.13, K.ink); }
+      else { tbox(x0, Y0, fx, Y1, K.trainR, K.train2); tr(x0 + 0.1, (Y0 + Y1) / 2 - 0.03, fx - 0.1, (Y0 + Y1) / 2 + 0.03, K.roof2); }
+      fx = x0 - 0.15; }); }
+  if (barge.state !== 'away') { const bx = barge.x, [y0, y1] = BARGE_Y, ym = (y0 + y1) / 2;
+    const pts = [[bx + 0.6, y0], [bx + 7, y0], [bx + 7.6, ym], [bx + 7, y1], [bx + 0.6, y1], [bx, ym]].map(p => TPD(p[0], p[1]));
+    spans(pts, K.ink2); const mx = (pts[0][0] + pts[2][0]) / 2, my = (pts[0][1] + pts[3][1]) / 2;
+    spans(pts.map(p => [p[0] + Math.sign(mx - p[0]) * 2, p[1] + Math.sign(my - p[1]) * 1.5]), PTD.planks);
+    tbox(bx + 5.1, y0 + 0.35, bx + 6.3, y1 - 0.35, K.plas1, K.plas2); tcirc(bx + 5.7, ym, 0.2, K.ink);
+    const n = Math.min(barge.count, 48); for (let i = 0; i < n; i++) { const [a, b] = TP(bx + 0.9 + (i % 12) * 0.34, y0 + 0.25 + Math.floor(i / 12) * 0.3); g.fillStyle = vt(COATS[i % COATS.length], VK); g.fillRect(Math.round(a - cx), Math.round(b - cy), 3, 3); g.fillStyle = vt(SKIN[i % 4], VK); g.fillRect(Math.round(a - cx) + 1, Math.round(b - cy) + 1, 1, 1); } }
+  D = prevD;
+  const vis = [];
+  for (const a of agents) { if (a.dead) continue;
+    if (!a.hidden) { vis.push([a, a.x, a.y, a.pose]); continue; }
+    const s = tdSpotFor(a); if (s) vis.push([a, s.x, s.y, nightK() > 0.5 ? 'lie' : 'sit']); }
+  vis.sort((p, q) => p[2] - q[2]);
+  for (const [a, x, y, pose] of vis) { const [px2, py2] = TP(x, y); const old = a.pose; a.pose = pose; drawPerson(g, a, px2 - cx, py2 - cy + (pose === 'lie' ? 0 : 3), 'td'); a.pose = old; }
+  g.drawImage(TDC[VK], -cx, -cy);
+  if (selected && selected.b && selected.b.w) { const b = selected.b; const [a, bb] = TP(b.x, b.y), [c, d] = TP(b.x + b.w, b.y + b.d); dashLine(g, [[a - 2, bb - 2], [c + 1, bb - 2], [c + 1, d + 1], [a - 2, d + 1], [a - 2, bb - 2]], '#f0c850', -Math.floor(t * 8), cx, cy); }
+  if (FLASH.t > 0 && Math.floor(t * 6) % 2 === 0) { const [x0, y0, x1, y1] = STAGE_AREAS[FLASH.stage]; dashLine(g, [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]].map(p => TP(p[0], p[1])), '#f0c850', 0, cx, cy); }
+  if (showPlan) STAGE_POS.forEach(([x, y], i) => { const [a, b] = TP(x, y); stagePlate(g, i, a - cx, b - cy - 6); });
+  if (showSrc) { for (const b of BLD) { const [a, bb] = TP(b.x + b.w / 2, b.y + 0.5); srcBadge(g, b.src, a - cx, bb - cy); }
+    [[16.8, 11.4, 'b'], [37.2, 2.8, 'b'], [47, -3, 'r'], [31.5, -6.3, 'r'], [76.8, 38.9, 'b']].forEach(([x, y, s]) => { const [a, bb] = TP(x, y); srcBadge(g, s, a - cx, bb - cy); }); }
+  overlayPeople(g, (x, y) => { const [a, b] = TP(x, y); return [a - cx, b - cy + 3]; }, t);
+}
+
+/* ---------------------------------------------------------------------
+   HISTORICAL VIEW – the map drawn like the coloured lithograph of 1907
+   (Tafel Ia): cream paper, zones A/B/C in colour, red buildings, italic
+   lettering. Turned so that north is up. People move on it as tokens.
+   --------------------------------------------------------------------- */
+const HSC = 18, HB = { x0: -8, y0: -16, x1: 120, y1: 64 };
+const HPW = (HB.x1 - HB.x0) * HSC, HPH = (HB.y1 - HB.y0) * HSC;
+const HP = (x, y) => [(x - HB.x0) * HSC, (y - HB.y0) * HSC];
+const HCOL = { paper: '#f1e9d2', ink: '#2a2320', sepia: '#5b4a3a', water: '#bcd5d0', road: '#f7f1df', siteB: '#cdd29c', siteA: '#f2c797', siteC: '#f1df98', bldB: '#e0664b', bldA: '#ee9767', bldC: '#e27556', lawn: '#b9c686', blue: '#3d5f8a', red: '#b8483a' };
+const camH = { x: 0, y: 0, z: 1 };
+let HISTC = null;
+function renderHist() {
+  const c = mk(HPW, HPH), g = c.getContext('2d'); g.lineJoin = 'round'; g.lineCap = 'round';
+  const path = pts => { g.beginPath(); pts.forEach((p, i) => { const [a, b] = HP(p[0], p[1]); i ? g.lineTo(a, b) : g.moveTo(a, b); }); };
+  const fillP = (pts, f, s, lw = 1) => { path(pts); g.closePath(); if (f) { g.fillStyle = f; g.fill(); } if (s) { g.strokeStyle = s; g.lineWidth = lw; g.stroke(); } };
+  const lineW = (pts, s, lw, dash) => { path(pts); g.strokeStyle = s; g.lineWidth = lw; g.setLineDash(dash || []); g.stroke(); g.setLineDash([]); };
+  const hatchIn = (pts, col, gap) => { g.save(); path(pts); g.closePath(); g.clip(); g.strokeStyle = col; g.lineWidth = 1; g.beginPath(); for (let k = -HPH; k < HPW; k += gap) { g.moveTo(k, 0); g.lineTo(k + HPH, HPH); } g.stroke(); g.restore(); };
+  const text = (s, x, y, size, col = HCOL.sepia, rot = 0, font = 'italic') => { const [a, b] = HP(x, y); g.save(); g.translate(a, b); g.rotate(rot); g.font = `${font} ${size}px Georgia, 'Times New Roman', serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = col; g.fillText(s, 0, 0); g.restore(); };
+  g.fillStyle = HCOL.paper; g.fillRect(0, 0, HPW, HPH);
+  srand(3); for (let i = 0; i < 14000; i++) { g.fillStyle = `rgba(120,95,60,${sr() * 0.07})`; g.fillRect(sr() * HPW, sr() * HPH, 1 + sr() * 2, 1); }
+  // harbour
+  fillP(RQ(-200, -200, 300, WATER_Y), HCOL.water);
+  g.save(); path(RQ(-200, -200, 300, WATER_Y)); g.clip(); g.strokeStyle = 'rgba(60,100,110,.22)'; g.lineWidth = 1; for (let y = 0; y < HP(0, WATER_Y)[1]; y += 5) { g.beginPath(); g.moveTo(0, y); g.lineTo(HPW, y); g.stroke(); } g.restore();
+  lineW([[-200, WATER_Y], [300, WATER_Y]], HCOL.ink, 2.2); lineW([[-200, WATER_Y + 0.18], [300, WATER_Y + 0.18]], HCOL.ink, 0.8);
+  for (const r of ROADS) fillP(r.poly, HCOL.road, HCOL.ink, 1.2);
+  // zones
+  fillP(SITE_POLY, HCOL.siteB, HCOL.ink, 1.8);
+  fillP(RQ(...A_ZONE), HCOL.siteA); fillP(RQ(...C_ZONE), HCOL.siteC, HCOL.ink, 1.6);
+  for (const l of LAWNS) fillP(RQ(...l), HCOL.lawn, 'rgba(60,80,40,.45)', 0.8);
+  fillP(ell(OVAL.cx, OVAL.cy, OVAL.rx - 0.5, OVAL.ry - 0.5), HCOL.lawn, 'rgba(60,80,40,.5)', 1);
+  lineW(ell(OVAL.cx, OVAL.cy, OVAL.rx + 0.7, OVAL.ry + 0.7).concat([[OVAL.cx + OVAL.rx + 0.7, OVAL.cy]]), 'rgba(60,70,110,.6)', 1);
+  // walkways (thin blue lines, like the drainage-marked paths of the plan)
+  for (const [, y, x0, x1] of STREETS_H) if (y > -1) { lineW([[x0, y - 0.45], [x1, y - 0.45]], 'rgba(61,95,138,.55)', 1); lineW([[x0, y + 0.45], [x1, y + 0.45]], 'rgba(61,95,138,.55)', 1); lineW([[x0, y + 0.1], [x1, y + 0.1]], 'rgba(184,72,58,.35)', 0.8, [4, 4]); }
+  for (const [, x, y0, y1] of STREETS_V) { lineW([[x - 0.45, Math.max(-0.4, y0)], [x - 0.45, y1]], 'rgba(61,95,138,.55)', 1); lineW([[x + 0.45, Math.max(-0.4, y0)], [x + 0.45, y1]], 'rgba(61,95,138,.55)', 1); }
+  // state railway (embankment hatching) and tunnel
+  lineW(offLine(STAATSBAHN, -1.25), HCOL.ink, 1.2); lineW(offLine(STAATSBAHN, 1.25), HCOL.ink, 1.2);
+  g.strokeStyle = HCOL.ink; g.lineWidth = 0.8; alongLine(STAATSBAHN, 0.32, (x, y, nx, ny) => { path([[x - nx * 1.25, y - ny * 1.25], [x - nx * 0.9, y - ny * 0.9]]); g.stroke(); path([[x + nx * 0.9, y + ny * 0.9], [x + nx * 1.25, y + ny * 1.25]]); g.stroke(); });
+  for (const o of [-0.65, -0.35, 0.35, 0.65]) lineW(offLine(STAATSBAHN, o), HCOL.ink, 0.9);
+  fillP(RQ(TUNNEL[0] - 0.5, TUNNEL[1] - 1.1, TUNNEL[0] + 0.5, TUNNEL[1] + 1.1), HCOL.paper, HCOL.ink, 1);
+  // siding, platform, pontoon, pits
+  lineW([[-200, SIDING_Y - 0.2], [TRAIN_STOP + 0.4, SIDING_Y - 0.2]], HCOL.ink, 1); lineW([[-200, SIDING_Y + 0.2], [TRAIN_STOP + 0.4, SIDING_Y + 0.2]], HCOL.ink, 1);
+  g.lineWidth = 0.7; for (let x = -8; x < TRAIN_STOP + 0.4; x += 0.4) { path([[x, SIDING_Y - 0.32], [x, SIDING_Y + 0.32]]); g.stroke(); }
+  fillP(RQ(...PLATFORM_R), '#e8dfc6', HCOL.ink, 1); fillP(RQ(...PONTOON_R), '#d8c7a0', HCOL.ink, 1);
+  for (const [x, y] of PITS) { fillP(circ(x, y, 0.45, 24), '#d5d9cf', HCOL.ink, 1); }
+  // buildings
+  for (const b of BLD) {
+    const pts = RQ(b.x, b.y, b.x + b.w, b.y + b.d), fill = b.zone === 'A' ? HCOL.bldA : b.zone === 'C' ? HCOL.bldC : HCOL.bldB;
+    fillP(pts, fill, null);
+    if (b.zone === 'A') hatchIn(pts, 'rgba(150,60,30,.35)', 6);
+    // partition lines like the plan's room divisions
+    g.strokeStyle = 'rgba(42,35,32,.55)'; g.lineWidth = 0.8;
+    if (b.cut && b.inner) for (const iw of b.inner) { path([[iw[0], iw[1]], [iw[2], iw[3]]]); g.stroke(); }
+    else if (b.d > b.w * 1.6) for (let y = b.y + 1.2; y < b.y + b.d - 0.6; y += 1.2) { path([[b.x, y], [b.x + b.w, y]]); g.stroke(); }
+    else if (b.w > b.d * 1.6) for (let x = b.x + 1.2; x < b.x + b.w - 0.6; x += 1.2) { path([[x, b.y], [x, b.y + b.d]]); g.stroke(); }
+    fillP(pts, null, HCOL.ink, 1.8);
+  }
+  { const m = SPECIAL[0]; fillP(circ(m.cx, m.cy, m.r, 8), HCOL.bldB, HCOL.ink, 1.4); }
+  // lettering
+  const big = HSC * 1.7;
+  text('A', 48.5, 10.4, big, HCOL.ink, 0, 'italic bold'); text('B', 81.6, 26, big, HCOL.ink, 0, 'italic bold'); text('B', 30, 7, big * 0.8, HCOL.ink, 0, 'italic bold'); text('B', 66, 40.8, big * 0.8, HCOL.ink, 0, 'italic bold'); text('C', 92.2, 58.6, big, HCOL.ink, 0, 'italic bold');
+  for (const b of BLD) {
+    if (/M$/.test(b.id) && b.id !== 'CM') continue;
+    const nm = /^P\d+$/.test(b.id) ? 'P.Nr.' + b.id.slice(1) : /^AP\d$/.test(b.id) ? 'P.Nr.' + b.id.slice(2) : (b.short || b.name).replace(/^Abt\. [AC] · /, '');
+    const vert = b.d > b.w * 1.3, len = vert ? b.d : b.w, size = Math.min(HSC * 0.62, (len * HSC * 0.9) / Math.max(4, nm.length * 0.55));
+    text(nm, b.x + b.w / 2, b.y + b.d / 2, size, HCOL.ink, vert ? -Math.PI / 2 : 0);
+  }
+  text('Harburger Chaussee', 20, -1.5, HSC * 0.9); text('Zollhafen', 50, -12, HSC * 1.4, '#3f6268'); text('Wilhelmsburger Strasse', 87.8, 34, HSC * 0.85, HCOL.sepia, -Math.PI / 2);
+  text('Auffahrtstrasse', 108, 45.8, HSC * 0.8); text('Staats-Bahn', 60, 39.6, HSC * 0.8, HCOL.sepia, -0.07); text('Tunnel', 78.8, 39.2, HSC * 0.55);
+  text('Musik-Pavillon', 16.8, 12.9, HSC * 0.5); text('Bahnsteig', 47.6, -2.95, HSC * 0.55);
+  // title cartouche, legend, compass, scale
+  text('Hamburg - Amerika Linie.', 18, 47.5, HSC * 1.25, HCOL.ink); text('Übersichtsplan der Auswandererhallen.', 18, 50.4, HSC * 1.45, HCOL.ink, 0, 'italic bold');
+  [['A. Unreine Seite.', HCOL.siteA], ['B. Reine Seite.', HCOL.siteB], ['C. Beobachtungs-Station.', HCOL.siteC]].forEach(([s, col], i) => { const y = 53.4 + i * 1.5; fillP(RQ(7, y - 0.45, 9.4, y + 0.45), col, HCOL.ink, 1); fillP(RQ(8.2, y - 0.45, 9.4, y + 0.45), HCOL.bldB, HCOL.ink, 1); text(s, 16.4, y, HSC * 0.8, HCOL.ink); });
+  text('Nach Tafel Ia (1907), genordet und vereinfacht · Konzeptstudie zur Überprüfung von Perspektive und Darstellung', 18, 58.4, HSC * 0.55, HCOL.sepia);
+  { const [a, b] = HP(-3, 12); g.strokeStyle = HCOL.ink; g.lineWidth = 1.4; g.beginPath(); g.moveTo(a, b + 50); g.lineTo(a, b - 50); g.stroke(); g.beginPath(); g.moveTo(a - 30, b); g.lineTo(a + 30, b); g.stroke();
+    g.fillStyle = HCOL.ink; g.beginPath(); g.moveTo(a, b - 56); g.lineTo(a - 7, b - 36); g.lineTo(a + 7, b - 36); g.closePath(); g.fill(); text('N', -3, 12 - 70 / HSC, HSC, HCOL.ink, 0, 'italic bold'); text('S', -3, 12 + 66 / HSC, HSC * 0.8); text('O', -3 + 44 / HSC, 12, HSC * 0.8); text('W', -3 - 44 / HSC, 12, HSC * 0.8); }
+  for (let i = 0; i < 5; i++) fillP(RQ(2 + i * 2.22, 31, 4.22 + i * 2.22, 31.3), i % 2 ? HCOL.paper : HCOL.ink, HCOL.ink, 0.8);
+  text('0', 2, 32.2, HSC * 0.6); text('50 m', 13.1, 32.2, HSC * 0.6);
+  return c;
+}
+function hS(x, y) { const [a, b] = HP(x, y); return [(a - camH.x) * camH.z, (b - camH.y) * camH.z]; }
+function drawHistView(t) {
+  const z = camH.z;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.imageSmoothingEnabled = true;
+  ctx.fillStyle = HCOL.paper; ctx.fillRect(0, 0, VW, VH);
+  ctx.drawImage(HISTC, -camH.x * z, -camH.y * z, HPW * z, HPH * z);
+  const U2 = HSC * z;
+  if (showPlan) for (const r of ROUTES) { ctx.beginPath(); r.ids.forEach((k, i) => { const [a, b] = hS(...NODES[k]); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.strokeStyle = ROUTE_COL[r.st]; ctx.lineWidth = Math.max(1.5, U2 * 0.12); ctx.setLineDash([U2 * 0.4, U2 * 0.3]); ctx.lineDashOffset = -t * U2; ctx.globalAlpha = 0.8; ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
+  if (FLASH.t > 0) { const [x0, y0, x1, y1] = STAGE_AREAS[FLASH.stage], [a, b] = hS(x0, y0), [c, d] = hS(x1, y1); ctx.strokeStyle = '#c9973e'; ctx.lineWidth = 3; ctx.setLineDash([8, 5]); ctx.strokeRect(a, b, c - a, d - b); ctx.setLineDash([]); }
+  const sel = selected && selected.b && selected.b.w ? selected.b : hovered && hovered.b && hovered.b.w ? hovered.b : null;
+  if (sel) { const [a, b] = hS(sel.x, sel.y), [c, d] = hS(sel.x + sel.w, sel.y + sel.d); ctx.strokeStyle = '#c9973e'; ctx.lineWidth = 3; ctx.strokeRect(a - 2, b - 2, c - a + 4, d - b + 4); }
+  // train & tender
+  const box = (x0, y0, x1, y1, f) => { const [a, b] = hS(x0, y0), [c, d] = hS(x1, y1); ctx.fillStyle = f; ctx.fillRect(a, b, c - a, d - b); ctx.strokeStyle = HCOL.ink; ctx.lineWidth = 1.2; ctx.strokeRect(a, b, c - a, d - b); };
+  if (train.state !== 'away') { let fx = train.x; for (const L of [2.3, 2.7, 2.7, 2.7]) { box(fx - L, SIDING_Y - 0.35, fx, SIDING_Y + 0.35, L === 2.3 ? '#3b3632' : '#6c7a5c'); fx -= L + 0.15; } }
+  if (barge.state !== 'away') { const bx = barge.x, [y0, y1] = BARGE_Y, ym = (y0 + y1) / 2; ctx.beginPath(); [[bx + 0.6, y0], [bx + 7, y0], [bx + 7.6, ym], [bx + 7, y1], [bx + 0.6, y1], [bx, ym]].forEach((p, i) => { const [a, b] = hS(...p); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); }); ctx.closePath(); ctx.fillStyle = '#c9b48a'; ctx.fill(); ctx.strokeStyle = HCOL.ink; ctx.lineWidth = 1.4; ctx.stroke();
+    box(bx + 5.1, y0 + 0.35, bx + 6.3, y1 - 0.35, '#efe6cf');
+    const n = Math.min(barge.count, 48); ctx.fillStyle = HCOL.ink; for (let i = 0; i < n; i++) { const [a, b] = hS(bx + 0.9 + (i % 12) * 0.34, y0 + 0.3 + Math.floor(i / 12) * 0.3); ctx.beginPath(); ctx.arc(a, b, Math.max(1.2, U2 * 0.09), 0, 7); ctx.fill(); } }
+  // beds in the opened rooms
+  for (const bd of BEDS) { const [a, b] = hS(bd.x - 0.42, bd.y - 0.2), [c, d] = hS(bd.x + 0.42, bd.y + 0.2); ctx.strokeStyle = 'rgba(42,35,32,.45)'; ctx.lineWidth = 0.8; ctx.strokeRect(a, b, c - a, d - b); }
+  // people as tokens
+  const r0 = Math.max(2, U2 * 0.16);
+  for (const a of agents) { if (a.dead || a.hidden) continue; const [x, y] = hS(a.x, a.y);
+    const r = r0 * (a.age < 13 ? 0.72 : 1), col = a.case ? HCOL.red : a.role === 'doc' ? '#f7f2e6' : a.role === 'police' ? '#24344c' : a.role === 'staff' || a.role === 'porter' ? HCOL.blue : a.sex === 'f' ? '#5b3f35' : HCOL.ink;
+    ctx.beginPath(); if (a.pose === 'lie') ctx.ellipse(x, y, r * 1.5, r * 0.7, 0, 0, 7); else ctx.arc(x, y, r, 0, 7);
+    ctx.fillStyle = col; ctx.fill(); ctx.lineWidth = selected?.a === a || hovered?.a === a ? 2.5 : 1; ctx.strokeStyle = selected?.a === a || hovered?.a === a ? '#c9973e' : a.role === 'doc' ? HCOL.ink : 'rgba(241,233,210,.9)'; ctx.stroke(); }
+  // stage numerals in plan style
+  if (showPlan) STAGE_POS.forEach(([x, y], i) => { const [a, b] = hS(x, y); const R = Math.max(9, U2 * 0.55); ctx.beginPath(); ctx.arc(a, b, R, 0, 7); ctx.fillStyle = HCOL.paper; ctx.fill(); ctx.strokeStyle = ['#6b5641', '#a3432a', '#a3432a', '#5f7a3f', '#3f5a73'][i]; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.fillStyle = ctx.strokeStyle; ctx.font = `italic ${Math.round(R * 1.1)}px Georgia, serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(['I', 'II', 'III', 'IV', 'V'][i], a, b + 1); });
+  if (showSrc) for (const b of BLD) { const [a, bb] = hS(b.x + b.w / 2, b.y + 0.5); ctx.beginPath(); ctx.arc(a, bb, 5, 0, 7); ctx.fillStyle = HCOL.paper; ctx.fill(); ctx.strokeStyle = HCOL.ink; ctx.lineWidth = 1.4; ctx.stroke(); ctx.fillStyle = HCOL.ink;
+    if (b.src === 'b') { ctx.beginPath(); ctx.arc(a, bb, 3, 0, 7); ctx.fill(); } else if (b.src === 'r') { ctx.beginPath(); ctx.arc(a, bb, 3, Math.PI / 2, Math.PI * 1.5); ctx.fill(); } }
+  // names of the Lewins, marker
+  ctx.font = `italic ${Math.max(11, Math.round(U2 * 0.7))}px Georgia, serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  const placed = [];
+  for (const a of agents) if (a.case && !a.dead && !a.hidden) { const [x, y] = hS(a.x, a.y); if (placed.some(([p, q]) => Math.abs(p - x) < 50 && Math.abs(q - y) < 14)) continue; placed.push([x, y]);
+    const s = a.name.split(' ')[0]; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(241,233,210,.95)'; ctx.strokeText(s, x, y - r0 - 3); ctx.fillStyle = HCOL.red; ctx.fillText(s, x, y - r0 - 3); }
+  if (CASE.state === 'pending' && CASE.fam.D && !CASE.fam.D.dead) { const [x, y] = hS(CASE.fam.D.x, CASE.fam.D.y); const R = Math.max(12, U2 * 0.9) + Math.sin(t * 5) * 2; ctx.beginPath(); ctx.arc(x, y, R, 0, 7); ctx.strokeStyle = HCOL.red; ctx.lineWidth = 2; ctx.stroke(); }
+  // night: the paper darkens a little
+  const k = nightK(); if (k > 0) { ctx.fillStyle = `rgba(28,34,62,${0.38 * k})`; ctx.fillRect(0, 0, VW, VH); }
+}
+
+/* ---------------------------------------------------------------------
+   CARDS (documents shown over the map) & log
+   --------------------------------------------------------------------- */
+function fmtTime(m) { const t = Math.floor(m) % 1440; return String(Math.floor(t / 60)).padStart(2, '0') + ':' + String(t % 60).padStart(2, '0'); }
+function fmtDate(m) { const d = new Date(START_DAY); d.setDate(d.getDate() + Math.floor(m / 1440)); return d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); }
+function log(txt, cls = '') { logEntries.unshift({ t: fmtTime(clock), txt, cls }); logEntries = logEntries.slice(0, 6); }
+function updateCaseBtn() { }
+let CARD = null, cardPausedFrom = null;
+function openCard(blocks, pause, opts = {}) { CARD = { blocks, opts, scroll: 0, lay: null }; if (pause && cardPausedFrom === null) { cardPausedFrom = speed || lastSpeed || 2; setSpeed(0); } }
+function closeModal() { CARD = null; if (cardPausedFrom !== null) { setSpeed(cardPausedFrom || 2); cardPausedFrom = null; } }
+
+function noticeCard(first) {
+  openCard([
+    { t: 'hdr', l: 'Ballinstadt · Auswandererhallen Veddel', r: 'Hinweis' },
+    { t: 'title', s: 'Konzeptstudie' },
+    { t: 'h', s: 'zur Überprüfung von Perspektive und Darstellung' },
+    { t: 'p', s: 'Dies ist kein Spiel und kein fertiges Produkt, sondern eine Konzeptstudie zur Überprüfung von Perspektive und Darstellung. Sie wurde mit Hilfe von KI erstellt, um Ansichten, Grafikstile und die Spielidee zu prüfen: Pixelgrafik in Iso- und Draufsicht, dazu eine Ansicht im Stil des historischen Lageplans.' },
+    { t: 'ul', items: ['Die Karte folgt dem Übersichtsplan der Hamburg-Amerika Linie von 1907 (Tafel Ia), ist aber vereinfacht. Schräg stehende Bauten sind gerade gestellt, Innenräume teils rekonstruiert.', 'Familie Lewin, alle Namen, Ärzte und Dialoge sind erfunden. Der Fall ist ein Gedankenexperiment, kein belegtes Ereignis.', 'Die historischen Angaben sind nicht fachlich geprüft. „Quellen" zeigt, was belegt, was rekonstruiert und was Spielentscheidung ist.'] },
+    { t: 'btns', items: [{ s: first ? 'Verstanden' : 'Schließen', fn: () => { closeModal(); if (first) introCard(); }, primary: true }] }
+  ], true);
+}
+function introCard() {
+  openCard([
+    { t: 'hdr', l: 'Hamburg-Amerika Linie · Auswandererhallen Veddel', r: 'September 1907' },
+    { t: 'title', s: 'Ein Ort. Ein Ablauf. Viele Fälle.' },
+    { t: 'p', s: 'Sie leiten die Auswandererhallen der Hamburg-Amerika Linie auf der Veddel. Sonderzüge bringen täglich Menschen aus Osteuropa. Auf der unreinen Seite werden sie registriert, gebadet, ihre Kleider desinfiziert und sie werden ärztlich untersucht. Dann warten sie auf der reinen Seite auf ihr Schiff.' },
+    { t: 'p', s: 'Morgen früh läuft die PENNSYLVANIA nach New York aus. Wen Amerika abweist, muss die Linie auf eigene Kosten zurückbringen.' },
+    { t: 'note', s: 'Die Karte folgt dem Übersichtsplan von 1907: Abteilung A (unrein) an der Harburger Chaussee, B (rein) mit dreißig Pavillons, C (Beobachtung) jenseits der Wilhelmsburger Straße.', c: '#3f5a73' },
+    { t: 'mono', s: 'Maus ziehen: verschieben · Mausrad: zoomen · H: Pixel / Plan 1907 · V: Iso / Draufsicht · Leertaste: Pause · 1–4: Tempo · P: Wege · Q: Quellen' },
+    { t: 'btns', items: [{ s: 'Die Hallen betreten', fn: closeModal, primary: true }] }
+  ], true);
+}
+function openCaseCard() {
+  if (CASE.state !== 'pending') return;
+  const until = (29 * 60 + 30) - clock, h = Math.max(0, Math.floor(until / 60)), mi = Math.max(0, Math.floor(until % 60));
+  const cFree = BEDS.filter(b => b.room.startsWith('C') && !b.occ).length;
+  const B = [
+    { t: 'hdr', l: 'Ärztliche Kontrolle · Auswandererhallen', r: 'Kontrollkarte Nr. 4417' },
+    { t: 'title', s: 'Familie Lewin' },
+    { t: 'mono', s: 'Aus Kowno (Russisches Reich) · Ziel: Chicago, Ill., über New York\nDampfer PENNSYLVANIA · Zwischendeck · Tender 13. Sept. 06:45 · Abfahrt 07:15\nMendel (41, Schneider) · Chana (36) · Dawid (12) · Rywka (7)' },
+    { t: 'note', s: `Befund Dr. Hartwig, ${fmtTime(CASE.at)}: Dawid, 12 J. – Bindehaut beider Augen gerötet, am rechten Oberlid vereinzelte Körnchen. Trachom nicht auszuschließen. Kann Reizung sein (Kohlenstaub, seit Montag im Zug).` }
+  ];
+  if (CASE.second === 'pos') B.push({ t: 'note', c: '#3f5a73', s: 'Nachuntersuchung Oberarzt Dr. Stamm: „Die Körnchen sind da. Ich würde ihn nicht schicken. Beweisen kann ich es heute nicht."' });
+  if (CASE.second === 'neg') B.push({ t: 'note', c: '#3f5a73', s: 'Nachuntersuchung Oberarzt Dr. Stamm: „Die Rötung geht zurück. Ich halte es für eine Reizung. Garantieren kann ich nichts."' });
+  if (CASE.second === 'asked') B.push({ t: 'note', c: '#3f5a73', s: 'Dr. Stamm ist auf dem Weg zum Warteraum.' });
+  B.push({ t: 'quote', s: '„Er hat die ganze Fahrt am Fenster gestanden. Seine Augen waren nie krank." – Chana Lewin' },
+    { t: 'h', s: 'Was die Linie weiß' },
+    { t: 'ul', items: ['Wird Dawid in New York abgewiesen, bringt ihn die Linie auf eigene Kosten zurück. Zusätzlich droht eine Strafe von 100 Dollar.', 'Ein Zwölfjähriger fährt nicht allein zurück. Einer aus der Familie muss ihn begleiten.', 'Die nächsten freien Zwischendeckplätze nach New York gibt es in etwa drei Wochen.', `Beobachtungsstation C: ${cFree} von ${BEDS.filter(b => b.room.startsWith('C')).length} Betten frei.`] },
+    { t: 'h', s: `Entscheidung – spätestens ${h} h ${mi} min (05:30)` },
+    { t: 'opts', items: [
+      { title: 'Dawid bleibt zurück', s: 'Dawid kommt in die Beobachtungsstation C jenseits der Wilhelmsburger Straße. Eltern und Rywka reisen morgen wie gebucht. Ist der Befund harmlos, fährt Dawid später allein nach.', sub: 'Auf der Karte: ein Kind allein in Station C.', fn: () => decide('sep') },
+      { title: 'Familie bleibt, bis der Befund klar ist', s: 'Alle vier ziehen ins Isolierzimmer der Station C. Ihre Plätze auf der PENNSYLVANIA bleiben leer.', sub: 'Auf der Karte: vier Betten belegt, kein Weg zum Anleger.', fn: () => decide('hold') },
+      { title: 'Alle fahren', s: 'Dawids Kontrollkarte wird gestempelt. Die Familie geht auf die reine Seite und morgen früh an Bord. Das Risiko tragen die Linie und die Familie.', sub: 'Auf der Karte: vier Menschen auf dem Weg zum Anleger.', fn: () => decide('all') },
+      { title: 'Zuerst den Oberarzt holen', s: 'Dr. Stamm kommt aus der Verwaltung herüber und untersucht Dawid noch einmal. Das dauert knapp eine Stunde.', sub: 'Das Ergebnis bleibt eine Einschätzung.', fn: orderSecondOpinion, disabled: !!CASE.second }
+    ] },
+    { t: 'btns', items: [{ s: 'Später entscheiden', fn: closeModal }] });
+  openCard(B, true);
+}
+function showTelegram() {
+  const t = CASE.truth;
+  const txt = t ? 'NEW YORK 29 SEPT = HAPAG HAMBURG = LEWIN DAWID 12 JAHRE ELLIS ISLAND ZURUECKGEWIESEN TRACHOM STOP MUTTER BEGLEITET RUECKREISE STOP VATER UND TOCHTER BLEIBEN CHICAGO STOP STRAFE 100 DOLLAR GEGEN LINIE VERHAENGT STOP'
+    : 'CHICAGO 30 SEPT = AN HALLENVERWALTUNG HAPAG VEDDEL = LEWIN ALLE VIER ELLIS ISLAND PASSIERT STOP ONKEL HERSCH HAT ABGEHOLT STOP DANK = MENDEL LEWIN';
+  CASE.telegram = txt;
+  log(t ? 'Telegramm aus New York: Dawid Lewin in Ellis Island zurückgewiesen.' : 'Telegramm aus Chicago: Familie Lewin angekommen.', 'case');
+  openCard([
+    { t: 'hdr', l: 'Hallenverwaltung · Eingang Telegramme', r: '3. Oktober 1907' },
+    { t: 'tele', head: 'KAISERLICH DEUTSCHE TELEGRAPHIE · AUFGENOMMEN VEDDEL', s: txt },
+    { t: 'p', s: t ? 'Die Barkasse bringt die beiden zurück – auf dem gleichen Weg, den sie gegangen sind.' : 'Auf der Karte ist von der Familie nichts mehr zu sehen. In ihren Betten im Pavillon 17 schlafen jetzt andere.' },
+    { t: 'btns', items: [{ s: 'Weiter', fn: closeModal, primary: true }] }
+  ], true);
+}
+function ledger() {
+  const d = CASE.decision, t = CASE.truth;
+  return {
+    sep: [['Plätze auf der PENNSYLVANIA genutzt', '3 von 4'], ['Verpflegungstage in Station C', '20'], [t ? 'Rückbeförderung per Bahn' : 'Umbuchung Dawid (GRAF WALDERSEE)', '1 Person'], ['Strafe der US-Behörden', '–'], ['Familie getrennt', t ? 'dauerhaft' : '20 Tage + Überfahrt']],
+    hold: [['Plätze auf der PENNSYLVANIA genutzt', '0 von 4'], ['Verpflegungstage in Station C', '80'], [t ? 'Rückbeförderung per Bahn' : 'Umbuchung (GRAF WALDERSEE)', '4 Personen'], ['Strafe der US-Behörden', '–'], ['Familie getrennt', 'nein']],
+    all: [['Plätze auf der PENNSYLVANIA genutzt', '4 von 4'], ['Verpflegungstage in Station C', '–'], ['Rückbeförderung New York → Hamburg', t ? '2 Personen, Kosten der Linie' : '–'], ['Strafe der US-Behörden', t ? '100 $' : '–'], ['Familie getrennt', t ? 'über den Atlantik' : 'nein']]
+  }[d];
+}
+function showEnd() {
+  if (phase === 'end') return; phase = 'end';
+  const d = CASE.decision, t = CASE.truth;
+  const what = { sep: 'Sie haben Dawid zurückbehalten und die Eltern fahren lassen.', hold: 'Sie haben die ganze Familie zurückbehalten.', all: 'Sie haben die ganze Familie fahren lassen.' }[d];
+  const res = {
+    sep: t ? 'Dawid hatte Trachom. Er wurde allein mit dem Zug zurück nach Osten gebracht. Seine Eltern waren da schon in Chicago.' : 'Dawid hatte kein Trachom. Er reiste zwanzig Tage nach seinen Eltern allein über den Atlantik, in der Obhut einer Stewardess.',
+    hold: t ? 'Dawid hatte Trachom. Die Familie reiste gemeinsam zurück nach Kowno. Die Linie zahlte keine Strafe.' : 'Dawid hatte kein Trachom. Die Familie verlor zwanzig Tage und reiste dann gemeinsam.',
+    all: t ? 'Dawid hatte Trachom. Er wurde in Ellis Island abgewiesen; seine Mutter begleitete ihn zurück. Der Vater und Rywka blieben in Chicago.' : 'Dawid hatte kein Trachom. Die Familie kam gemeinsam an.'
+  }[d];
+  openCard([
+    { t: 'hdr', l: 'Fall Lewin · abgeschlossen', r: 'Hallenbuch der Hamburg-Amerika Linie' },
+    { t: 'title', s: d === 'all' && !t ? 'Angekommen' : d === 'hold' ? (t ? 'Zurück nach Kowno' : 'Zwanzig Tage') : 'Getrennt' },
+    { t: 'p', s: what + ' ' + res },
+    { t: 'note', s: 'Der Befund wurde zu Beginn verdeckt ausgelost. Ob Dawid krank war, konnte in der Nacht niemand wissen – auch der Oberarzt nicht.' },
+    { t: 'h', s: 'Aus dem Buch der Reederei' }, { t: 'table', rows: ledger() },
+    { t: 'h', s: 'Historischer Hintergrund' },
+    { t: 'ul', items: ['Trachom war einer der häufigsten Gründe, aus denen Einwanderer in Ellis Island abgewiesen wurden.', 'Die Linien mussten Abgewiesene auf eigene Kosten zurückbringen und konnten bestraft werden. Deshalb wurde schon in Hamburg untersucht.', 'Die Hallen wurden 1901 eröffnet und bis 1907 auf rund 30 Gebäude für bis zu 5.000 Menschen erweitert.'] },
+    { t: 'btns', items: [{ s: 'Karte ansehen', fn: closeModal }, { s: 'Noch einmal spielen', fn: () => location.reload(), primary: true }] }
+  ], true);
+}
+function shipGone() {
+  phase = 'shipGone';
+  const map = { sep: 'Auf der Karte: Dawid steht allein im Hof der Beobachtungsstation. Seine Eltern sind an Bord.', hold: 'Auf der Karte: Vier Betten in Station C sind belegt. Die Lewins sehen vom Hof aus zu, wie die anderen gehen.', all: 'Auf der Karte: Die Betten der Lewins im Pavillon 17 sind leer. Die Familie ist an Bord.' }[CASE.decision] || '';
+  openCard([
+    { t: 'hdr', l: '13. September 1907 · 07:10', r: 'Hallenbuch' },
+    { t: 'title', s: 'Die PENNSYLVANIA hat abgelegt' },
+    { t: 'p', s: map },
+    { t: 'note', s: 'Der Befund ist noch offen. Was aus der Entscheidung wird, zeigt sich später – auf dieser Karte.' },
+    { t: 'btns', items: [{ s: 'Noch auf der Karte bleiben', fn: closeModal }, { s: 'Zwanzig Tage später →', fn: startEpilogue, primary: true }] }
+  ], true);
+}
+
+/* ---------------------------------------------------------------------
+   HUD – drawn in the same pixel system as the map
+   --------------------------------------------------------------------- */
+const UI = { ink: '#1d1a1f', ink2: '#3b302c', sep: '#6b5641', paper: '#e9dcb9', paperL: '#f5ecd4', paperD: '#d3c199', shade: '#6f5d42', rust: '#9a3a24', green: '#4f6b36', blue: '#34506a', red: '#8a2418', gold: '#f0c850' };
+const STAGE_UI = ['#6b5641', '#9a3a24', '#9a3a24', '#4f6b36', '#34506a'];
+const STAGES = ['Ankunft', 'Registrierung', 'Bad & Untersuchung', 'Unterbringung', 'Einschiffung'];
+const SRC_TXT = { b: 'belegt', r: 'rekonstruiert', s: 'Spielentscheidung' };
+let VW = 0, VH = 0, DPR = 1, VIEW_S = 2, U = 2, HW = 0, HH = 0, view = 'iso', style = 'pixel';
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const VIEWC = mk(1, 1), vg = VIEWC.getContext('2d'), HUDC = mk(1, 1), hg = HUDC.getContext('2d');
+const cams = { iso: { x: 0, y: 0 }, td: { x: 0, y: 0 } };
+let HITS = [], BLOCK = [], drag = null, pressed = null, animT = 0;
+const mouse = { x: -1, y: -1, in: false };
+const DIM = (() => { const c = mk(2, 2), g = c.getContext('2d'); g.fillStyle = 'rgba(29,26,31,.85)'; g.fillRect(0, 0, 1, 1); return hg.createPattern(c, 'repeat'); })();
+
+function R(x, y, w, h, c) { hg.fillStyle = c; hg.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h)); }
+function Tx(s, x, y, c = UI.ink, sc = 1) { const t = tc(s, c, sc); hg.drawImage(t, Math.round(x), Math.round(y)); return t.width; }
+function panel(x, y, w, h, fill = UI.paper) { R(x + 2, y + 2, w, h, UI.shade); R(x, y, w, h, UI.ink); R(x + 1, y + 1, w - 2, h - 2, fill); R(x + 1, y + 1, w - 2, 1, UI.paperL); R(x + 1, y + 1, 1, h - 2, UI.paperL); BLOCK.push([x, y, w + 2, h + 2]); }
+function hov(x, y, w, h) { const hx = mouse.x / U, hy = mouse.y / U; return mouse.in && hx >= x && hx < x + w && hy >= y && hy < y + h; }
+function hit(x, y, w, h, fn) { HITS.push([x, y, w, h, fn]); }
+function button(x, y, w, h, label, on, fn) {
+  const hv = hov(x, y, w, h); R(x + 1, y + 1, w, h, UI.shade); R(x, y, w, h, UI.ink); R(x + 1, y + 1, w - 2, h - 2, on ? UI.ink2 : hv ? UI.paperL : UI.paper);
+  Tx(label, x + Math.floor((w - textW(label)) / 2), y + Math.floor((h - 8) / 2) - 1, on ? UI.paperL : UI.ink); hit(x, y, w, h, fn); BLOCK.push([x, y, w + 1, h + 1]);
+}
+function stageOf(a) {
+  if (a.role !== 'emi' || a.dead) return -1;
+  if (a.leaving) return 4; if (a.clean) return 3; if (a.y < 1.6) return 0; if (a.y < 5.2 && a.x > 38.8 && a.x < 54.2) return 1; return 2;
+}
+function drawHUD() {
+  HITS = []; BLOCK = []; hg.clearRect(0, 0, HW, HH);
+  // clock & ship
+  panel(6, 6, 184, 58);
+  Tx(fmtDate(clock), 11, 10, UI.sep); Tx(fmtTime(clock), 11, 21, UI.ink, 2);
+  let s1, s2;
+  if (phase === 'day') { const left = 30 * 60 + 45 - clock; s1 = 'Dampfer PENNSYLVANIA → New York'; s2 = `Tender legt ab 06:45 · noch ${Math.max(0, Math.floor(left / 60))} h ${String(Math.max(0, Math.floor(left % 60))).padStart(2, '0')}`; }
+  else if (phase === 'shipGone') { s1 = 'PENNSYLVANIA hat abgelegt'; s2 = ''; } else { s1 = 'Dampfer GRAF WALDERSEE → New York'; s2 = 'Einschiffung heute'; }
+  Tx(s1, 11, 41, UI.ink2); Tx(s2, 11, 51, UI.sep);
+  // flow
+  const c = [0, 0, 0, 0, 0]; for (const a of agents) { const s = stageOf(a); if (s >= 0) c[s]++; } if (barge.state === 'docked' || barge.state === 'leaving') c[4] += barge.count;
+  if (HH > 260) {
+    const fy = 72; panel(6, fy, 184, 122);
+    Tx('DER ABLAUF', 11, fy + 5, UI.rust); R(11, fy + 15, 174, 1, UI.ink);
+    STAGES.forEach((nm, i) => { const y = fy + 19 + i * 12, hv = hov(9, y - 1, 178, 12); if (hv) R(9, y - 1, 178, 12, UI.paperL);
+      const num = ['I', 'II', 'III', 'IV', 'V'][i]; R(11, y, 17, 10, STAGE_UI[i]); R(12, y + 1, 15, 8, UI.paperL); Tx(num, 12 + Math.floor((15 - textW(num)) / 2), y + 1, STAGE_UI[i]);
+      Tx(nm, 32, y + 1, UI.ink); const n = String(c[i]); Tx(n, 185 - textW(n), y + 1, UI.ink);
+      hit(9, y - 1, 178, 12, () => { FLASH.stage = i; FLASH.t = 2.2; }); });
+    R(11, fy + 81, 174, 1, UI.paperD);
+    const p17 = BEDS.filter(b => b.room.startsWith('P17')), cb = BEDS.filter(b => b.room.startsWith('C'));
+    [['Pavillon 17 · Betten', `${p17.filter(b => b.occ).length}/${p17.length}`], ['Station C · Betten', `${cb.filter(b => b.occ).length}/${cb.length}`], ['Tender · an Bord', barge.state === 'docked' || barge.state === 'leaving' ? String(barge.count) : '–']]
+      .forEach(([k, v], i) => { Tx(k, 11, fy + 86 + i * 11, UI.sep); Tx(v, 185 - textW(v), fy + 86 + i * 11, UI.ink); });
+  }
+  // controls (top right)
+  const btns = [['▮▮', 0], ['1×', 1], ['3×', 3], ['10×', 10], ['30×', 30]]; let bx = HW - 8;
+  const right = [[style === 'pixel' ? 'PLAN 1907' : 'PIXEL', false, () => toggleStyle()]];
+  if (style === 'pixel') right.push([view === 'iso' ? 'DRAUFSICHT' : 'ISOMETRIE', false, () => toggleView()]);
+  right.push(['QUELLEN', showSrc, () => { showSrc = !showSrc; }], ['WEGE', showPlan, () => { showPlan = !showPlan; }]);
+  for (const [l, on, fn] of right) { const w = textW(l) + 12; bx -= w; button(bx, 6, w, 15, l, on, fn); bx -= 3; }
+  bx -= 6; for (const [l, sp] of btns.slice().reverse()) { const w = textW(l) + 10; bx -= w; button(bx, 6, w, 15, l, speed === sp, () => { cardPausedFrom = null; setSpeed(sp); }); bx -= 2; }
+  // case banner
+  if (CASE.state === 'pending') { const until = (29 * 60 + 30) - clock; const s = `FALL LEWIN – ENTSCHEIDUNG OFFEN · NOCH ${Math.max(0, Math.floor(until / 60))} H ${String(Math.max(0, Math.floor(until % 60))).padStart(2, '0')}`;
+    const w = textW(s) + 22, x = Math.max(196, Math.floor((HW - w) / 2)), y = HH > 300 ? 6 : 68, blink = Math.floor(animT * 2) % 2;
+    R(x + 2, y + 2, w, 15, UI.shade); R(x, y, w, 15, UI.ink); R(x + 1, y + 1, w - 2, 13, hov(x, y, w, 15) ? '#a8321f' : UI.red); R(x + 6, y + 5, 5, 5, blink ? UI.gold : '#6a1a10'); Tx(s, x + 15, y + 3, UI.paperL);
+    hit(x, y, w, 15, openCaseCard); BLOCK.push([x, y, w + 2, 17]); }
+  // log
+  { const W = Math.min(280, HW - 12), inner = W - 42; const rows = []; for (const e of logEntries.slice(0, 4)) { const ls = wrap(e.txt, inner); rows.push([e, ls]); }
+    const h = 20 + rows.reduce((s, r) => s + r[1].length * LH + 3, 0), y = HH - 8 - h; panel(6, y, W, h);
+    Tx('HALLENBUCH', 11, y + 5, UI.sep); let yy = y + 17;
+    for (const [e, ls] of rows) { Tx(e.t, 11, yy, UI.sep); ls.forEach((l, i) => Tx(l, 42, yy + i * LH, e.cls.includes('case') ? UI.red : UI.ink)); yy += ls.length * LH + 3; } }
+  // study tag
+  { const s1 = 'KONZEPTSTUDIE · KEIN FERTIGES SPIEL', s2 = 'zur Überprüfung von Perspektive und Darstellung · mit KI erstellt', w = Math.max(textW(s1), textW(s2)) + 12, x = HW - w - 8, y = HH - 32;
+    R(x + 2, y + 2, w, 24, UI.shade); R(x, y, w, 24, UI.ink); R(x + 1, y + 1, w - 2, 22, '#e3c56a'); Tx(s1, x + 6, y + 3, UI.ink); Tx(s2, x + 6, y + 13, UI.ink2); BLOCK.push([x, y, w + 2, 26]); hit(x, y, w, 24, () => noticeCard(false)); }
+  // source legend
+  if (showSrc && HW > 500) { const W = 190, h = 48, x = HW - W - 8, y = HH - h - 44; panel(x, y, W, h); Tx('QUELLENLAGE', x + 5, y + 5, UI.sep);
+    [['b', 'belegt: in Quellen genannt'], ['r', 'rekonstruiert: Lage abgeleitet'], ['s', 'Spielentscheidung']].forEach(([k, t], i) => { srcBadge(hg, k, x + 9, y + 20 + i * 10); Tx(t, x + 17, y + 16 + i * 10, UI.ink); }); }
+  drawInspector();
+  // tooltip
+  if (hovered && !CARD && !overHud()) { const nm = hovered.kind === 'agent' ? (hovered.a.name || '') : (hovered.b.short || hovered.b.name); if (nm) { const w = textW(nm) + 8, x = Math.min(HW - w - 4, mouse.x / U + 8), y = mouse.y / U + 10; R(x + 1, y + 1, w, 12, UI.shade); R(x, y, w, 12, UI.ink); R(x + 1, y + 1, w - 2, 10, UI.paperL); Tx(nm, x + 4, y + 2, UI.ink); } }
+  if (CARD) { HITS = []; hg.fillStyle = DIM; hg.fillRect(0, 0, HW, HH); BLOCK = [[0, 0, HW, HH]]; drawCard(); }
+}
+function drawInspector() {
+  const s = selected; if (!s) return;
+  const W = 200, x = HW - W - 8, y = 28, iw = W - 14; const L = [];
+  const add = (t, c = UI.ink, sc = 1) => wrap(t, iw / sc).forEach(l => L.push([l, c, sc]));
+  if (s.kind === 'agent') { const a = s.a;
+    const role = { emi: a.sex === 'f' ? 'Auswanderin' : 'Auswanderer', staff: 'Personal der Hallen', doc: 'Arzt', police: 'Polizei', porter: 'Gepäckträger' }[a.role];
+    add(a.name || role, UI.rust); add((a.who ? a.who + ' · ' : '') + role + (a.role === 'emi' ? ' · ' + a.age + ' Jahre' : ''), UI.sep); L.push(['', 0, 1]);
+    if (a.dead) add('Nicht mehr auf der Karte.');
+    else { if (a.from) { add('HERKUNFT', UI.sep); add(a.from); add('ZIEL', UI.sep); add(a.dest); }
+      add('JETZT', UI.sep); add(a.status || (a.follow ? (a.follow.leader.status || 'mit der Familie') : '–'));
+      if (a.group && a.group.length > 1) { add('MIT', UI.sep); add(a.group.filter(m => m !== a).map(m => m.name.split(' ')[0] + ' (' + m.age + ')').join(', ')); }
+      if (a.case) add('Der Fall dieses Spiels.', UI.red); }
+  } else { const b = s.b;
+    add(b.short || b.name, UI.rust); add(b.zone === 'A' ? 'Unreine Seite' : b.zone === 'C' ? 'Isoliert' : b.zone === 'B' ? 'Reine Seite' : 'Anlage', UI.sep); L.push(['', 0, 1]);
+    add(b.info || ''); L.push(['', 0, 1]); add('QUELLE: ' + SRC_TXT[b.src || 's'].toUpperCase(), UI.ink2); if (b.note) add(b.note, UI.sep); }
+  const h = 10 + L.length * LH; panel(x, y, W, h);
+  L.forEach(([t, c, sc], i) => { if (t) Tx(t, x + 7, y + 5 + i * LH, c, sc); });
+  if (s.kind === 'bld' && s.b.src) srcBadge(hg, s.b.src, x + W - 11, y + 9);
+  button(x + W - 14, y + h - 14, 11, 11, '×', false, () => { selected = null; });
+}
+/* card layout */
+function layoutCard(blocks) {
+  const W = Math.min(HW - 12, 450), P = 10, iw = W - 2 * P; let y = P; const ops = [];
+  for (const b of blocks) {
+    if (b.t === 'hdr') { ops.push({ k: 't', s: b.l.toUpperCase(), x: P, y, c: UI.sep }); if (b.r && textW(b.l + b.r) < iw - 20) { const s = b.r.toUpperCase(); ops.push({ k: 't', s, x: W - P - textW(s), y, c: UI.sep }); } y += 10; ops.push({ k: 'r', x: P, y, w: iw }); ops.push({ k: 'r', x: P, y: y + 2, w: iw }); y += 9; }
+    else if (b.t === 'title') { wrap(b.s, Math.floor(iw / 2)).forEach(l => { ops.push({ k: 't', s: l, x: P, y, c: UI.ink, sc: 2 }); y += 19; }); y += 3; }
+    else if (b.t === 'p' || b.t === 'mono') { wrap(b.s, iw).forEach(l => { ops.push({ k: 't', s: l, x: P, y, c: b.t === 'mono' ? UI.ink2 : UI.ink }); y += LH; }); y += 5; }
+    else if (b.t === 'note' || b.t === 'quote') { const ls = wrap(b.s, iw - 14), h = ls.length * LH + 7; ops.push({ k: 'box', x: P, y, w: iw, h, fill: b.t === 'note' ? UI.paperL : null, bar: b.c || (b.t === 'quote' ? UI.sep : UI.rust) }); ls.forEach((l, i) => ops.push({ k: 't', s: l, x: P + 9, y: y + 4 + i * LH, c: b.t === 'quote' ? UI.sep : UI.ink2 })); y += h + 6; }
+    else if (b.t === 'h') { ops.push({ k: 't', s: b.s.toUpperCase(), x: P, y, c: UI.rust }); y += 12; }
+    else if (b.t === 'ul') { for (const it of b.items) { ops.push({ k: 'dot', x: P + 1, y: y + 4 }); wrap(it, iw - 8).forEach(l => { ops.push({ k: 't', s: l, x: P + 7, y, c: UI.ink }); y += LH; }); y += 1; } y += 4; }
+    else if (b.t === 'opts') { const two = iw > 330, cw = two ? Math.floor((iw - 6) / 2) : iw;
+      for (let i = 0; i < b.items.length; i += two ? 2 : 1) { const row = b.items.slice(i, i + (two ? 2 : 1));
+        const lay = row.map(it => ({ it, tl: wrap(it.title.toUpperCase(), cw - 14), sl: wrap(it.s, cw - 14), ul: it.sub ? wrap(it.sub, cw - 14) : [] }));
+        const h = Math.max(...lay.map(l => 8 + l.tl.length * LH + 2 + l.sl.length * LH + (l.ul.length ? 3 + l.ul.length * LH : 0) + 3));
+        lay.forEach((l, j) => ops.push({ k: 'opt', x: P + j * (cw + 6), y, w: cw, h, l })); y += h + 6; } }
+    else if (b.t === 'btns') { let x = W - P; for (const it of b.items.slice().reverse()) { const w = textW(it.s) + 18; x -= w; ops.push({ k: 'btn', x, y, w, h: 16, it }); x -= 6; } y += 22; }
+    else if (b.t === 'table') { for (const [a, v] of b.rows) { ops.push({ k: 't', s: a, x: P, y, c: UI.ink }); ops.push({ k: 't', s: v, x: W - P - textW(v), y, c: UI.ink2 }); ops.push({ k: 'dots', x: P, y: y + LH, w: iw }); y += LH + 3; } y += 5; }
+    else if (b.t === 'tele') { const ls = wrap(b.s, iw - 16), h = ls.length * LH + 22; ops.push({ k: 'tele', x: P, y, w: iw, h }); ops.push({ k: 't', s: b.head, x: P + 8, y: y + 5, c: '#7d6a3c' }); ls.forEach((l, i) => ops.push({ k: 't', s: l, x: P + 8, y: y + 17 + i * LH, c: UI.ink })); y += h + 8; }
+  }
+  return { W, H: y + P - 5, ops };
+}
+function drawCard() {
+  if (!CARD.lay || CARD.layW !== HW) { CARD.lay = layoutCard(CARD.blocks); CARD.layW = HW; }
+  const { W, H, ops } = CARD.lay, x0 = Math.floor((HW - W) / 2);
+  const maxS = Math.max(0, H - (HH - 12)); CARD.scroll = clamp(CARD.scroll, 0, maxS); const y0 = maxS ? 6 - CARD.scroll : Math.floor((HH - H) / 2);
+  R(x0 + 3, y0 + 3, W, H, UI.ink); R(x0, y0, W, H, UI.ink); R(x0 + 1, y0 + 1, W - 2, H - 2, UI.paper); R(x0 + 3, y0 + 3, W - 6, 1, UI.paperD); R(x0 + 3, y0 + H - 4, W - 6, 1, UI.paperD);
+  CARD.box = [x0, y0, W, H];
+  for (const o of ops) { const x = x0 + o.x, y = y0 + o.y;
+    if (o.k === 't') Tx(o.s, x, y, o.c, o.sc || 1);
+    else if (o.k === 'r') R(x, y, o.w, 1, UI.ink);
+    else if (o.k === 'box') { if (o.fill) R(x, y, o.w, o.h, o.fill); R(x, y, 2, o.h, o.bar); }
+    else if (o.k === 'dot') R(x, y, 2, 2, UI.rust);
+    else if (o.k === 'dots') for (let i = 0; i < o.w; i += 2) R(x + i, y, 1, 1, UI.paperD);
+    else if (o.k === 'tele') { R(x, y, o.w, o.h, '#f1e4b0'); for (let i = 0; i < o.w; i += 3) { R(x + i, y, 2, 1, '#b9a66f'); R(x + i, y + o.h - 1, 2, 1, '#b9a66f'); } for (let i = 0; i < o.h; i += 3) { R(x, y + i, 1, 2, '#b9a66f'); R(x + o.w - 1, y + i, 1, 2, '#b9a66f'); } R(x + 6, y + 14, o.w - 12, 1, '#d6c38a'); }
+    else if (o.k === 'opt') { const it = o.l.it, dis = !!it.disabled, hv = !dis && hov(x, y, o.w, o.h);
+      R(x - 1, y - 1, o.w + 2, o.h + 2, hv ? UI.ink : UI.sep); R(x, y, o.w, o.h, dis ? UI.paperD : hv ? UI.paperL : '#efe4c4'); if (hv) R(x, y, 3, o.h, UI.rust);
+      let yy = y + 5; o.l.tl.forEach(l => { Tx(l, x + 7, yy, dis ? UI.sep : UI.rust); yy += LH; }); yy += 2; o.l.sl.forEach(l => { Tx(l, x + 7, yy, dis ? UI.sep : UI.ink); yy += LH; });
+      if (o.l.ul.length) { yy += 3; o.l.ul.forEach(l => { Tx(l, x + 7, yy, UI.sep); yy += LH; }); }
+      if (!dis) hit(x, y, o.w, o.h, it.fn); }
+    else if (o.k === 'btn') { const hv = hov(x, y, o.w, o.h), pr = o.it.primary; R(x + 2, y + 2, o.w, o.h, UI.shade); R(x, y, o.w, o.h, UI.ink); R(x + 1, y + 1, o.w - 2, o.h - 2, pr ? (hv ? UI.rust : UI.ink2) : hv ? UI.paperL : UI.paper);
+      Tx(o.it.s, x + 9, y + 3, pr ? UI.paperL : UI.ink); hit(x, y, o.w, o.h, o.it.fn); }
+  }
+}
+function hudHit() { const hx = mouse.x / U, hy = mouse.y / U; for (let i = HITS.length - 1; i >= 0; i--) { const [x, y, w, h, fn] = HITS[i]; if (hx >= x && hx < x + w && hy >= y && hy < y + h) return HITS[i]; } return null; }
+function overHud() { const hx = mouse.x / U, hy = mouse.y / U; return BLOCK.some(([x, y, w, h]) => hx >= x && hx < x + w && hy >= y && hy < y + h); }
+
+/* ---------------------------------------------------------------------
+   WORLD HIT TEST (both views)
+   --------------------------------------------------------------------- */
+function pip(pt, poly) { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) c = !c; } return c; }
+function worldHit() {
+  if (style === 'hist') { let best = null, bd = Math.max(8, camH.z * HSC * 0.3);
+    for (const a of agents) { if (a.dead || a.hidden) continue; const [x, y] = hS(a.x, a.y); const d = Math.hypot(mouse.x - x, mouse.y - y); if (d < bd) { bd = d; best = { kind: 'agent', a }; } }
+    if (best) return best; const wx = (mouse.x / camH.z + camH.x) / HSC + HB.x0, wy = (mouse.y / camH.z + camH.y) / HSC + HB.y0;
+    for (const b of BLD) if (wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.d) return { kind: 'bld', b }; return groundHit(wx, wy); }
+  const cam = cams[view], ax = mouse.x / VIEW_S + cam.x, ay = mouse.y / VIEW_S + cam.y;
+  let best = null, bd = 7;
+  for (const a of agents) { if (a.dead) continue; let p;
+    if (view === 'iso') { if (a.hidden) continue; p = A(a.x, a.y); } else { if (a.hidden) { const s = tdSpotFor(a); if (!s) continue; p = TP(s.x, s.y); } else p = TP(a.x, a.y); p = [p[0], p[1] + 3]; }
+    const dx = ax - p[0], dy = ay - (p[1] - 5); const d = Math.hypot(dx, dy * 0.6); if (d < bd) { bd = d; best = { kind: 'agent', a }; } }
+  if (best) return best;
+  let wx, wy;
+  if (view === 'iso') {
+    let hitB = null, hk = -1e9;
+    for (const b of BLD) { const top = b.cut ? b.h * 0.62 : b.h + (b.rh || 0);
+      const hex = [[b.x, b.y + b.d, 0], [b.x + b.w, b.y + b.d, 0], [b.x + b.w, b.y, 0], [b.x + b.w, b.y, top], [b.x, b.y, top], [b.x, b.y + b.d, top]].map(p => A(...p));
+      if (pip([ax, ay], hex)) { const k = b.x + b.y + b.w + b.d; if (k > hk) { hk = k; hitB = b; } } }
+    if (hitB) return { kind: 'bld', b: hitB };
+    [wx, wy] = unA(ax, ay);
+  } else { [wx, wy] = unTP(ax, ay); for (const b of BLD) if (wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.d) return { kind: 'bld', b }; }
+  return groundHit(wx, wy);
+}
+function distSeg(p, a, b) { const dx = b[0] - a[0], dy = b[1] - a[1], t = clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1), 0, 1); return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy); }
+function groundHit(wx, wy) {
+  const m = SPECIAL[0]; if (Math.hypot(wx - m.cx, wy - m.cy) < m.r + 0.3) return { kind: 'bld', b: Object.assign({ zone: 'B' }, m) };
+  const k = SPECIAL[1]; if (wx > k.x && wx < k.x + k.w && wy > k.y && wy < k.y + k.d) return { kind: 'bld', b: Object.assign({ zone: 'A' }, k) };
+  if (wy > PLATFORM_R[1] - 1 && wy < PLATFORM_R[3] && wx > 38 && wx < TRAIN_STOP + 1) return { kind: 'bld', b: Object.assign({ zone: 'A' }, GROUND_INFO.rail) };
+  if (inRect([wx, wy], [PONTOON_R[0] - 3, BARGE_Y[0], PONTOON_R[2] + 3, PONTOON_R[3]])) return { kind: 'bld', b: Object.assign({ zone: 'B' }, GROUND_INFO.quay) };
+  for (let i = 0; i < STAATSBAHN.length - 1; i++) if (distSeg([wx, wy], STAATSBAHN[i], STAATSBAHN[i + 1]) < 1.3) return { kind: 'bld', b: Object.assign({}, GROUND_INFO.bahn) };
+  if (distSeg([wx, wy], [59.5, -0.4], [87.8, 21.6]) < 1.4 || (Math.abs(wx - 87.8) < 1.4 && wy > 21 && wy < 64)) return { kind: 'bld', b: Object.assign({}, GROUND_INFO.road) };
+  for (let i = 0; i < SITE_POLY.length; i++) if (distSeg([wx, wy], SITE_POLY[i], SITE_POLY[(i + 1) % SITE_POLY.length]) < 0.35) return { kind: 'bld', b: Object.assign({}, GROUND_INFO.wall) };
+  return null;
+}
+
+/* ---------------------------------------------------------------------
+   INPUT
+   --------------------------------------------------------------------- */
+function setSpeed(s) { speed = s; if (s > 0) lastSpeed = s; }
+function centerOn(wx, wy) { const [a, b] = A(wx, wy), [c, d] = TP(wx, wy), [h1, h2] = HP(wx, wy); camH.x = h1 - VW / camH.z / 2; camH.y = h2 - VH / camH.z / 2; cams.iso.x = a - VW / VIEW_S / 2; cams.iso.y = b - VH / VIEW_S / 2; cams.td.x = c - VW / VIEW_S / 2; cams.td.y = d - VH / VIEW_S / 2; }
+function screenWorld() { if (style === 'hist') { const hx = VW / 2 / camH.z + camH.x, hy = VH / 2 / camH.z + camH.y; return [hx / HSC + HB.x0, hy / HSC + HB.y0]; } const cam = cams[view], ax = VW / VIEW_S / 2 + cam.x, ay = VH / VIEW_S / 2 + cam.y; return view === 'iso' ? unA(ax, ay) : unTP(ax, ay); }
+function toggleStyle() { const [wx, wy] = screenWorld(); style = style === 'pixel' ? 'hist' : 'pixel'; centerOn(wx, wy); hovered = null; }
+function toggleView() { const [wx, wy] = screenWorld(); view = view === 'iso' ? 'td' : 'iso'; centerOn(wx, wy); hovered = null; }
+cv.addEventListener('pointerdown', e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.in = true;
+  if (CARD || overHud()) { pressed = { h: hudHit() }; return; }
+  const cam = style === 'hist' ? camH : cams[view]; drag = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false }; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.in = true;
+  if (drag) { const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true; if (drag.moved) { if (style === 'hist') { camH.x = drag.cx - dx / camH.z; camH.y = drag.cy - dy / camH.z; } else { cams[view].x = drag.cx - dx / VIEW_S; cams[view].y = drag.cy - dy / VIEW_S; } } return; }
+  hovered = CARD || overHud() ? null : worldHit(); cv.style.cursor = hudHit() || hovered ? 'pointer' : 'default'; });
+cv.addEventListener('pointerup', e => {
+  if (pressed) { const h = hudHit(), p = pressed.h; if (h && p && h[0] === p[0] && h[1] === p[1] && h[2] === p[2] && h[3] === p[3]) h[4](); else if (CARD && !h && CARD.box) { const [x, y, w, hh] = CARD.box, mx = mouse.x / U, my = mouse.y / U; if (mx < x || mx > x + w || my < y || my > y + hh) closeModal(); } pressed = null; return; }
+  if (drag && !drag.moved) { selected = worldHit(); if (selected && selected.kind === 'agent' && selected.a.case && CASE.state === 'pending') openCaseCard(); }
+  drag = null; });
+cv.addEventListener('pointerleave', () => { mouse.in = false; hovered = null; });
+cv.addEventListener('wheel', e => { e.preventDefault(); mouse.x = e.clientX; mouse.y = e.clientY;
+  if (CARD) { CARD.scroll += Math.sign(e.deltaY) * 20; return; }
+  if (style === 'hist') { const nz = clamp(camH.z * Math.exp(-e.deltaY * 0.0015), 0.35, 4); const hx = e.clientX / camH.z + camH.x, hy = e.clientY / camH.z + camH.y; camH.z = nz; camH.x = hx - e.clientX / nz; camH.y = hy - e.clientY / nz; return; }
+  const ns = clamp(VIEW_S + (e.deltaY < 0 ? 1 : -1), 1, 5); if (ns === VIEW_S) return;
+  for (const v of ['iso', 'td']) { const cam = cams[v], ax = e.clientX / VIEW_S + cam.x, ay = e.clientY / VIEW_S + cam.y; cam.x = ax - e.clientX / ns; cam.y = ay - e.clientY / ns; }
+  VIEW_S = ns; resize(); }, { passive: false });
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); if (CARD) return; setSpeed(speed ? 0 : (lastSpeed || 2)); }
+  if (e.key === 'p' || e.key === 'P') showPlan = !showPlan;
+  if (e.key === 'q' || e.key === 'Q') showSrc = !showSrc;
+  if ((e.key === 'v' || e.key === 'V') && style === 'pixel') toggleView();
+  if (e.key === 'h' || e.key === 'H') toggleStyle();
+  if (e.key === 'Escape') { if (CARD) closeModal(); else selected = null; }
+  if (['1', '2', '3', '4'].includes(e.key)) { cardPausedFrom = null; setSpeed([1, 3, 10, 30][+e.key - 1]); }
+});
+function resize() {
+  DPR = devicePixelRatio || 1; VW = innerWidth; VH = innerHeight;
+  cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR); cv.style.width = VW + 'px'; cv.style.height = VH + 'px';
+  VIEWC.width = Math.ceil(VW / VIEW_S); VIEWC.height = Math.ceil(VH / VIEW_S);
+  U = VW < 760 ? 1 : 2; HW = Math.ceil(VW / U); HH = Math.ceil(VH / U); HUDC.width = HW; HUDC.height = HH;
+  if (CARD) CARD.lay = null;
+}
+addEventListener('resize', resize);
+
+/* ---------------------------------------------------------------------
+   MAIN LOOP
+   --------------------------------------------------------------------- */
+let lastT = performance.now();
+function update(dtReal) {
+  const dt = Math.min(dtReal, 0.1) * speed; animT += dtReal;
+  if (dt > 0) {
+    const steps = Math.ceil(dt / 0.5), h = dt / steps;
+    for (let s = 0; s < steps; s++) {
+      clock += h;
+      for (const ev of EVENTS) if (!ev.done && clock >= ev.at) { const r = ev.fn(); if (!ev.repeat || r) ev.done = true; }
+      for (const a of agents) if (!a.dead) stepAgent(a, h);
+      if (train.state === 'in') { train.x = Math.min(train.target, train.x + h * 5); if (train.x >= train.target) { train.state = 'stop'; const cb = train.cb; train.cb = null; cb && cb(); } }
+      else if (train.state === 'out') { train.x -= h * 5; if (train.x < -34) { train.state = 'away'; CASE.trainReady = false; } }
+      if (barge.state === 'leaving') { barge.x -= h * 1.6; if (barge.x < -16) barge.state = 'away'; }
+      else if (barge.state === 'arriving') { barge.x = Math.min(28.3, barge.x + h * 2); if (barge.x >= 28.3) barge.state = 'docked'; }
+    }
+    agents = agents.filter(a => !a.dead || a === selected?.a);
+  }
+  if (FLASH.t > 0) FLASH.t -= dtReal;
+}
+function render() {
+  const k = nightK(); VK = k < 0.25 ? 'day' : k < 0.7 ? 'dusk' : 'night'; K = PALS[VK];
+  if (style === 'hist') { drawHistView(animT); drawHUD(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false; ctx.drawImage(HUDC, 0, 0, HW * U * DPR, HH * U * DPR); return; }
+  const cam = cams[view], cx = Math.round(cam.x), cy = Math.round(cam.y);
+  vg.fillStyle = PALS[VK].mea1; vg.fillRect(0, 0, VIEWC.width, VIEWC.height);
+  if (view === 'iso') drawIsoView(vg, cx, cy, animT); else { PTD = PTDV[VK]; drawTDView(vg, cx, cy, animT); }
+  drawHUD();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(VIEWC, 0, 0, VIEWC.width * VIEW_S * DPR, VIEWC.height * VIEW_S * DPR);
+  ctx.drawImage(HUDC, 0, 0, HW * U * DPR, HH * U * DPR);
+}
+function frame(now) { const dt = (now - lastT) / 1000; lastT = now; update(dt); render(); requestAnimationFrame(frame); }
+
+/* ---------------------------------------------------------------------
+   BOOT
+   --------------------------------------------------------------------- */
+buildIsoAll(); HISTC = renderHist();
+VIEW_S = innerWidth >= 1000 ? 2 : 1; camH.z = clamp(innerWidth / 1500, 0.5, 1.4);
+resize(); centerOn(50, 12); for (const v of ['iso', 'td']) cams[v].x -= innerWidth >= 1000 ? 90 / VIEW_S : 0;
+setupDay(); setSpeed(2); noticeCard(true);
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>
